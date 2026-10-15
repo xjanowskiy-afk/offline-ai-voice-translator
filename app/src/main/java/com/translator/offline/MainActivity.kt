@@ -55,10 +55,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setupManager = ModelSetupManager(this)
 
-        val serviceIntent = Intent(this, TranslatorForegroundService::class.java)
-        ContextCompat.startForegroundService(this, serviceIntent)
-        bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
-
         viewModel.onToggleRecordingCallback = { start ->
             val s = service
             if (s != null) {
@@ -73,46 +69,69 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    var isSetupDone by remember { mutableStateOf(setupManager.isAllModelsReady()) }
-                    var isTabletopMode by remember { mutableStateOf(false) }
-                    var showAudioSheet by remember { mutableStateOf(false) }
-                    var showDebugSheet by remember { mutableStateOf(false) }
-
-                    LaunchedEffect(Unit) {
-                        WindowInfoTracker.getOrCreate(this@MainActivity)
-                            .windowLayoutInfo(this@MainActivity)
-                            .collectLatest { layoutInfo ->
-                                val foldingFeature = layoutInfo.displayFeatures
-                                    .filterIsInstance<FoldingFeature>()
-                                    .firstOrNull()
-
-                                isTabletopMode = foldingFeature != null &&
-                                        foldingFeature.state == FoldingFeature.State.HALF_OPENED &&
-                                        foldingFeature.orientation == FoldingFeature.Orientation.HORIZONTAL
-                            }
+                    var hasAllPermissions by remember {
+                        mutableStateOf(
+                            PermissionAndSystemHelper.hasRecordAudioPermission(this@MainActivity) &&
+                                    PermissionAndSystemHelper.hasNotificationPermission(this@MainActivity) &&
+                                    PermissionAndSystemHelper.isIgnoringBatteryOptimizations(this@MainActivity)
+                        )
                     }
 
-                    if (!isSetupDone) {
-                        OnboardingSetupScreen(setupManager = setupManager) {
-                            viewModel.initEngines(setupManager.modelsDir) {
-                                isSetupDone = true
+                    if (!hasAllPermissions) {
+                        PermissionsGuardScreen(
+                            onAllPermissionsGranted = {
+                                hasAllPermissions = true
+                                val serviceIntent = Intent(this@MainActivity, TranslatorForegroundService::class.java)
+                                ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
+                                bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
                             }
-                        }
+                        )
                     } else {
-                        if (isTabletopMode) {
-                            FoldableSplitLayout(
-                                viewModel = viewModel,
-                                onOpenAudioSettings = { showAudioSheet = true },
-                                onOpenDebugLogs = { showDebugSheet = true }
-                            )
-                        } else {
-                            TranslatorMainScreen(
-                                viewModel = viewModel,
-                                onOpenAudioSettings = { showAudioSheet = true },
-                                onOpenDebugLogs = { showDebugSheet = true }
-                            )
+                        var isSetupDone by remember { mutableStateOf(setupManager.isAllModelsReady()) }
+                        var isTabletopMode by remember { mutableStateOf(false) }
+                        var showAudioSheet by remember { mutableStateOf(false) }
+                        var showDebugSheet by remember { mutableStateOf(false) }
+
+                        LaunchedEffect(Unit) {
+                            if (!isBound) {
+                                val serviceIntent = Intent(this@MainActivity, TranslatorForegroundService::class.java)
+                                ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
+                                bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
+                            }
+                            WindowInfoTracker.getOrCreate(this@MainActivity)
+                                .windowLayoutInfo(this@MainActivity)
+                                .collectLatest { layoutInfo ->
+                                    val foldingFeature = layoutInfo.displayFeatures
+                                        .filterIsInstance<FoldingFeature>()
+                                        .firstOrNull()
+
+                                    isTabletopMode = foldingFeature != null &&
+                                            foldingFeature.state == FoldingFeature.State.HALF_OPENED &&
+                                            foldingFeature.orientation == FoldingFeature.Orientation.HORIZONTAL
+                                }
                         }
-                    }
+
+                        if (!isSetupDone) {
+                            OnboardingSetupScreen(setupManager = setupManager) {
+                                viewModel.initEngines(setupManager.modelsDir) {
+                                    isSetupDone = true
+                                }
+                            }
+                        } else {
+                            if (isTabletopMode) {
+                                FoldableSplitLayout(
+                                    viewModel = viewModel,
+                                    onOpenAudioSettings = { showAudioSheet = true },
+                                    onOpenDebugLogs = { showDebugSheet = true }
+                                )
+                            } else {
+                                TranslatorMainScreen(
+                                    viewModel = viewModel,
+                                    onOpenAudioSettings = { showAudioSheet = true },
+                                    onOpenDebugLogs = { showDebugSheet = true }
+                                )
+                            }
+                        }
 
                     if (showAudioSheet) {
                         val routingMgr = service?.routingManager
@@ -135,6 +154,7 @@ class MainActivity : ComponentActivity() {
 
                     if (showDebugSheet) {
                         DebugConsoleSheet(onDismiss = { showDebugSheet = false })
+                    }
                     }
                 }
             }

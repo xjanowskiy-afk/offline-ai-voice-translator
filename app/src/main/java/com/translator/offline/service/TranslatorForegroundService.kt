@@ -2,11 +2,13 @@ package com.translator.offline.service
 
 import android.app.*
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.translator.offline.MainActivity
 import com.translator.offline.NativeBridge
 import com.translator.offline.audio.AudioCaptureEngine
@@ -46,8 +48,12 @@ class TranslatorForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForegroundWithNotification()
+        startForegroundSafely()
         setupPipelines()
+    }
+
+    fun startMicrophoneForegroundService() {
+        startForegroundSafely()
     }
 
     private fun setupPipelines() {
@@ -140,7 +146,7 @@ class TranslatorForegroundService : Service() {
         return cyr >= lat
     }
 
-    private fun startForegroundWithNotification() {
+    private fun startForegroundSafely() {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent, PendingIntent.FLAG_IMMUTABLE
@@ -154,14 +160,28 @@ class TranslatorForegroundService : Service() {
             .setOngoing(true)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        val hasMicPermission = ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasMicPermission) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            AppLogger.log("Foreground service fallback: ${e.message}")
+            try {
+                startForeground(NOTIFICATION_ID, notification)
+            } catch (err: Exception) {
+                AppLogger.log("Critical startForeground error: ${err.message}")
+            }
         }
     }
 
