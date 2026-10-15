@@ -1,0 +1,109 @@
+package com.translator.offline.audio
+
+import android.content.Context
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.os.Build
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+enum class AudioTranslationMode {
+    TABLE_SPEAKER,
+    SOLO_PROMPTER,
+    HYBRID_SPEAKER_AND_EARBUD,
+    SPLIT_EARBUDS
+}
+
+class AudioRoutingManager(
+    private val context: Context,
+    private val onOutputRouteChanged: (isBluetoothA2dp: Boolean) -> Unit
+) {
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+    private val _isBluetoothConnected = MutableStateFlow(false)
+    val isBluetoothConnected = _isBluetoothConnected.asStateFlow()
+
+    private val _currentMode = MutableStateFlow(AudioTranslationMode.TABLE_SPEAKER)
+    val currentMode = _currentMode.asStateFlow()
+
+    private val deviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+            checkBluetoothStatus()
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+            checkBluetoothStatus()
+        }
+    }
+
+    init {
+        audioManager.registerAudioDeviceCallback(deviceCallback, null)
+        checkBluetoothStatus()
+    }
+
+    private fun checkBluetoothStatus() {
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val hasBt = devices.any {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_LE_HEADSET
+        }
+        _isBluetoothConnected.value = hasBt
+        onOutputRouteChanged(hasBt)
+    }
+
+    fun setMode(mode: AudioTranslationMode) {
+        _currentMode.value = mode
+        applyRoutingForCurrentMode()
+    }
+
+    fun routeToSpeaker() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val speakerDevice = audioManager.availableCommunicationDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            }
+            if (speakerDevice != null) {
+                audioManager.setCommunicationDevice(speakerDevice)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = true
+        }
+        onOutputRouteChanged(false)
+    }
+
+    fun routeToBluetoothA2dp() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val btDevice = audioManager.availableCommunicationDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_LE_HEADSET
+            }
+            if (btDevice != null) {
+                audioManager.setCommunicationDevice(btDevice)
+            } else {
+                audioManager.clearCommunicationDevice()
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = false
+        }
+        onOutputRouteChanged(_isBluetoothConnected.value)
+    }
+
+    private fun applyRoutingForCurrentMode() {
+        when (_currentMode.value) {
+            AudioTranslationMode.TABLE_SPEAKER -> routeToSpeaker()
+            AudioTranslationMode.SOLO_PROMPTER,
+            AudioTranslationMode.SPLIT_EARBUDS -> routeToBluetoothA2dp()
+            AudioTranslationMode.HYBRID_SPEAKER_AND_EARBUD -> {
+            }
+        }
+    }
+
+    fun release() {
+        audioManager.unregisterAudioDeviceCallback(deviceCallback)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+        }
+    }
+}
