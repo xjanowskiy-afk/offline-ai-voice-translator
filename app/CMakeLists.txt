@@ -23,9 +23,9 @@ set_target_properties(onnxruntime PROPERTIES IMPORTED_LOCATION
     ${JNI_LIBS_DIR}/libonnxruntime.so
 )
 
-add_library(sherpa-onnx-c-api SHARED IMPORTED)
-set_target_properties(sherpa-onnx-c-api PROPERTIES IMPORTED_LOCATION
-    ${JNI_LIBS_DIR}/libsherpa-onnx-c-api.so
+add_library(sherpa-onnx-jni SHARED IMPORTED)
+set_target_properties(sherpa-onnx-jni PROPERTIES IMPORTED_LOCATION
+    ${JNI_LIBS_DIR}/libsherpa-onnx-jni.so
 )
 
 set(LLAMA_STANDALONE OFF CACHE BOOL "disable standalone" FORCE)
@@ -53,7 +53,7 @@ target_link_libraries(native-pipeline
     PRIVATE
     llama
     ggml
-    sherpa-onnx-c-api
+    sherpa-onnx-jni
     onnxruntime
     android
     log

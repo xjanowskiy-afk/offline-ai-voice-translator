@@ -34,11 +34,15 @@ curl -sSL "${SHERPA_URL}" -o "${TEMP_DIR}/${SHERPA_TAR}"
 echo ">>> Распаковка библиотек sherpa-onnx и onnxruntime..."
 tar -xjf "${TEMP_DIR}/${SHERPA_TAR}" -C "${TEMP_DIR}"
 
-find "${TEMP_DIR}" -type f -name "libsherpa-onnx-c-api.so" -exec cp {} "${JNILIBS_DIR}/" \;
+# Копирование .so библиотек в папку jniLibs
+find "${TEMP_DIR}" -type f -name "libsherpa-onnx-jni.so" -exec cp {} "${JNILIBS_DIR}/" \;
 find "${TEMP_DIR}" -type f -name "libonnxruntime.so" -exec cp {} "${JNILIBS_DIR}/" \;
 
-find "${TEMP_DIR}" -type f -name "c-api.h" -exec cp {} "${INCLUDE_DIR}/sherpa-onnx/c-api/" \;
-find "${TEMP_DIR}" -type f -name "onnxruntime_c_api.h" -exec cp {} "${INCLUDE_DIR}/" \;
+# Скачивание c-api.h если нет
+if [ ! -f "${INCLUDE_DIR}/sherpa-onnx/c-api/c-api.h" ]; then
+    curl -sSL "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/${SHERPA_VERSION}/sherpa-onnx/c-api/c-api.h" \
+        -o "${INCLUDE_DIR}/sherpa-onnx/c-api/c-api.h"
+fi
 
 rm -rf "${TEMP_DIR}"
 

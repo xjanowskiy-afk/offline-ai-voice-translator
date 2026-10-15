@@ -6,7 +6,7 @@ object NativeBridge {
 
     init {
         System.loadLibrary("onnxruntime")
-        System.loadLibrary("sherpa-onnx-c-api")
+        System.loadLibrary("sherpa-onnx-jni")
         System.loadLibrary("native-pipeline")
     }
 
