@@ -46,7 +46,8 @@ class AudioRoutingManager(
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         val hasBt = devices.any {
             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_LE_HEADSET
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    it.type == 26 // AudioDeviceInfo.TYPE_BLE_HEADSET (API 31+)
         }
         _isBluetoothConnected.value = hasBt
         onOutputRouteChanged(hasBt)
@@ -76,7 +77,7 @@ class AudioRoutingManager(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val btDevice = audioManager.availableCommunicationDevices.firstOrNull {
                 it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_LE_HEADSET
+                        it.type == 26 // AudioDeviceInfo.TYPE_BLE_HEADSET
             }
             if (btDevice != null) {
                 audioManager.setCommunicationDevice(btDevice)

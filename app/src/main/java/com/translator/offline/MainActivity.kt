@@ -60,11 +60,13 @@ class MainActivity : ComponentActivity() {
         bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
 
         viewModel.onToggleRecordingCallback = { start ->
-            val s = service ?: return@TranslatorViewModel
-            if (start) {
-                s.captureEngine?.start()
-            } else {
-                s.captureEngine?.stop()
+            val s = service
+            if (s != null) {
+                if (start) {
+                    s.captureEngine?.start()
+                } else {
+                    s.captureEngine?.stop()
+                }
             }
         }
 

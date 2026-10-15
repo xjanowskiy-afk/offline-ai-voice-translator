@@ -9,6 +9,7 @@ import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import com.translator.offline.NativeBridge
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.asStateFlow
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
