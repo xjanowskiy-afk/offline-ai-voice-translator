@@ -28,6 +28,16 @@ set_target_properties(sherpa-onnx-jni PROPERTIES IMPORTED_LOCATION
     ${JNI_LIBS_DIR}/libsherpa-onnx-jni.so
 )
 
+if (EXISTS ${JNI_LIBS_DIR}/libsherpa-onnx-c-api.so)
+    add_library(sherpa-onnx-c-api SHARED IMPORTED)
+    set_target_properties(sherpa-onnx-c-api PROPERTIES IMPORTED_LOCATION
+        ${JNI_LIBS_DIR}/libsherpa-onnx-c-api.so
+    )
+    set(SHERPA_C_API_LIB sherpa-onnx-c-api)
+else()
+    set(SHERPA_C_API_LIB "")
+endif()
+
 set(LLAMA_STANDALONE OFF CACHE BOOL "disable standalone" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "build static llama" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "disable openmp on android" FORCE)
@@ -52,6 +62,7 @@ target_link_libraries(native-pipeline
     llama
     ggml
     sherpa-onnx-jni
+    ${SHERPA_C_API_LIB}
     onnxruntime
     android
     log

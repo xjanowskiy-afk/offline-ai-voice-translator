@@ -23,7 +23,7 @@ else
 fi
 
 # 2. Загрузка предсобранных JNI библиотек sherpa-onnx (arm64-v8a)
-SHERPA_VERSION="v1.10.30"
+SHERPA_VERSION="v1.10.42"
 SHERPA_TAR="sherpa-onnx-${SHERPA_VERSION}-android.tar.bz2"
 SHERPA_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/${SHERPA_VERSION}/${SHERPA_TAR}"
 
