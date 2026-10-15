@@ -21,7 +21,8 @@
     <application
         android:name=".TranslatorApp"
         android:allowBackup="false"
-        android:icon="@android:drawable/ic_btn_speak_now"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Offline Voice Translator"
         android:largeHeap="true"
         android:extractNativeLibs="true"
