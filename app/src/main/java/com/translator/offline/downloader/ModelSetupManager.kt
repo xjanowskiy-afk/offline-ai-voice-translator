@@ -65,8 +65,8 @@ class ModelSetupManager(private val context: Context) {
         DownloadTask(
             category = ModelCategory.VAD,
             fileName = "silero_vad.onnx",
-            downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-vad-models/resolve/main/silero_vad.onnx",
-            minExpectedBytes = 1_800_000L
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+            minExpectedBytes = 600_000L
         ),
         DownloadTask(
             category = ModelCategory.ASR,
@@ -125,7 +125,7 @@ class ModelSetupManager(private val context: Context) {
         DownloadTask(
             category = ModelCategory.TTS,
             fileName = "espeak-ng-data.tar.bz2",
-            downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-tts-models/resolve/main/espeak-ng-data.tar.bz2",
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2",
             minExpectedBytes = 4_500_000L,
             isArchive = true,
             archiveType = "tar.bz2"
