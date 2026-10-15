@@ -22,6 +22,11 @@ android {
 
         externalNativeBuild {
             cmake {
+                cFlags += listOf(
+                    "-O3",
+                    "-march=armv8.2-a+dotprod+fp16",
+                    "-DANDROID_NDK"
+                )
                 cppFlags += listOf(
                     "-O3",
                     "-march=armv8.2-a+dotprod+fp16",
@@ -34,6 +39,8 @@ android {
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
                     "-DANDROID_ARM_NEON=ON",
+                    "-DGGML_OPENMP=OFF",
+                    "-DGGML_LLAMAFILE=OFF",
                     "-DLLAMA_BUILD_TESTS=OFF",
                     "-DLLAMA_BUILD_EXAMPLES=OFF",
                     "-DLLAMA_BUILD_SERVER=OFF"

@@ -34,10 +34,8 @@ set(GGML_OPENMP OFF CACHE BOOL "disable openmp on android" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "disable llamafile" FORCE)
 
 if (${ANDROID_ABI} STREQUAL "arm64-v8a")
-    add_compile_definitions(
-        __ARM_NEON
-        __ARM_FEATURE_DOTPROD
-        __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
+    add_compile_options(
+        -march=armv8.2-a+dotprod+fp16
     )
 endif()
 
