@@ -34,9 +34,12 @@ curl -sSL "${SHERPA_URL}" -o "${TEMP_DIR}/${SHERPA_TAR}"
 echo ">>> Распаковка библиотек sherpa-onnx и onnxruntime..."
 tar -xjf "${TEMP_DIR}/${SHERPA_TAR}" -C "${TEMP_DIR}"
 
-# Копирование .so библиотек в папку jniLibs
-find "${TEMP_DIR}" -type f -name "libsherpa-onnx-jni.so" -exec cp {} "${JNILIBS_DIR}/" \;
-find "${TEMP_DIR}" -type f -name "libonnxruntime.so" -exec cp {} "${JNILIBS_DIR}/" \;
+# Копирование .so библиотек строго для arm64-v8a в папку jniLibs
+if [ -d "${TEMP_DIR}/jniLibs/arm64-v8a" ]; then
+    cp -fv "${TEMP_DIR}/jniLibs/arm64-v8a/"*.so "${JNILIBS_DIR}/"
+else
+    find "${TEMP_DIR}" -path "*/arm64-v8a/*" -name "*.so" -exec cp -fv {} "${JNILIBS_DIR}/" \;
+fi
 
 # Скачивание c-api.h если нет
 if [ ! -f "${INCLUDE_DIR}/sherpa-onnx/c-api/c-api.h" ]; then
