@@ -19,8 +19,8 @@ struct PipelineEngine {
     const SherpaOnnxOnlineRecognizer* asr = nullptr;
     const SherpaOnnxOnlineStream* asrStream = nullptr;
 
-    const SherpaOnnxOfflineTts* ttsRu = nullptr;
-    const SherpaOnnxOfflineTts* ttsDe = nullptr;
+    SherpaOnnxOfflineTts* ttsRu = nullptr;
+    SherpaOnnxOfflineTts* ttsDe = nullptr;
 
     llama_model* llmModel = nullptr;
     llama_context* llmCtx = nullptr;
@@ -401,7 +401,7 @@ Java_com_translator_offline_NativeBridge_synthesizeSpeechChunkByLang(
     jint speakerId
 ) {
     std::lock_guard<std::mutex> lock(g_pipeline.mtx);
-    const SherpaOnnxOfflineTts* activeTts = isGerman ? g_pipeline.ttsDe : g_pipeline.ttsRu;
+    SherpaOnnxOfflineTts* activeTts = isGerman ? g_pipeline.ttsDe : g_pipeline.ttsRu;
     if (!activeTts) return env->NewFloatArray(0);
 
     const char* text = env->GetStringUTFChars(textChunk, nullptr);
