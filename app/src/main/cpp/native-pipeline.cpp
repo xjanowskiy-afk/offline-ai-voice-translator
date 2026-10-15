@@ -15,7 +15,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 struct PipelineEngine {
-    const SherpaOnnxVoiceActivityDetector* vad = nullptr;
+    SherpaOnnxVoiceActivityDetector* vad = nullptr;
     const SherpaOnnxOnlineRecognizer* asr = nullptr;
     SherpaOnnxOnlineStream* asrStream = nullptr;
 
@@ -24,7 +24,6 @@ struct PipelineEngine {
 
     llama_model* llmModel = nullptr;
     llama_context* llmCtx = nullptr;
-    const llama_vocab* llmVocab = nullptr;
 
     std::mutex mtx;
 };
@@ -84,7 +83,7 @@ Java_com_translator_offline_NativeBridge_processVadChunk(
     if (!samples) return JNI_FALSE;
 
     SherpaOnnxVoiceActivityDetectorAcceptWaveform(g_pipeline.vad, samples, sampleCount);
-    return SherpaOnnxVoiceActivityDetectorIsSpeechDetected(g_pipeline.vad) ? JNI_TRUE : JNI_FALSE;
+    return SherpaOnnxVoiceActivityDetectorDetected(g_pipeline.vad) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -232,8 +231,6 @@ Java_com_translator_offline_NativeBridge_initLlm(
 
     if (!g_pipeline.llmModel) return JNI_FALSE;
 
-    g_pipeline.llmVocab = llama_model_get_vocab(g_pipeline.llmModel);
-
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = 1024;
     ctx_params.n_threads = 4;
@@ -252,7 +249,7 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
     jobject callback
 ) {
     std::lock_guard<std::mutex> lock(g_pipeline.mtx);
-    if (!g_pipeline.llmCtx || !g_pipeline.llmModel || !g_pipeline.llmVocab) return;
+    if (!g_pipeline.llmCtx || !g_pipeline.llmModel) return;
 
     jclass callbackClass = env->GetObjectClass(callback);
     jmethodID onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;Z)V");
@@ -263,13 +260,13 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
 
     std::vector<llama_token> tokens_list(prompt.length() + 128);
     int n_tokens = llama_tokenize(
-        g_pipeline.llmVocab, prompt.c_str(), prompt.length(),
+        g_pipeline.llmModel, prompt.c_str(), prompt.length(),
         tokens_list.data(), tokens_list.size(), true, false
     );
     if (n_tokens < 0) {
         tokens_list.resize(-n_tokens);
         n_tokens = llama_tokenize(
-            g_pipeline.llmVocab, prompt.c_str(), prompt.length(),
+            g_pipeline.llmModel, prompt.c_str(), prompt.length(),
             tokens_list.data(), tokens_list.size(), true, false
         );
     }
@@ -301,7 +298,7 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
         llama_token new_token_id = llama_sampler_sample(smpl, g_pipeline.llmCtx, -1);
         llama_sampler_accept(smpl, new_token_id);
 
-        if (llama_vocab_is_eog(g_pipeline.llmVocab, new_token_id)) {
+        if (llama_token_is_eog(g_pipeline.llmModel, new_token_id)) {
             jstring emptyStr = env->NewStringUTF("");
             env->CallVoidMethod(callback, onTokenMethod, emptyStr, JNI_TRUE);
             env->DeleteLocalRef(emptyStr);
@@ -309,7 +306,7 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
         }
 
         char buf[256];
-        int n = llama_token_to_piece(g_pipeline.llmVocab, new_token_id, buf, sizeof(buf), 0, false);
+        int n = llama_token_to_piece(g_pipeline.llmModel, new_token_id, buf, sizeof(buf), 0, false);
         if (n > 0) {
             std::string piece(buf, n);
             jstring jPiece = toJString(env, piece);
