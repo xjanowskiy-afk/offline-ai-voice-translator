@@ -34,6 +34,9 @@ class AudioCaptureEngine(
     private val captureScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var captureJob: Job? = null
 
+    private val _audioAmplitude = kotlinx.coroutines.flow.MutableStateFlow(0.0f)
+    val audioAmplitude = _audioAmplitude.asStateFlow()
+
     @Volatile
     var isCapturing: Boolean = false
         private set
@@ -105,12 +108,17 @@ class AudioCaptureEngine(
                 continue
             }
 
+            var sumSq = 0.0
             directFloatBuffer.clear()
             for (i in 0 until readSamples) {
                 val floatSample = pcmShortArray[i] / 32768.0f
+                sumSq += floatSample * floatSample
                 directFloatBuffer.putFloat(floatSample)
             }
             directFloatBuffer.flip()
+
+            val rms = Math.sqrt(sumSq / readSamples).toFloat()
+            _audioAmplitude.value = (rms * 5.0f).coerceIn(0.0f, 1.0f)
 
             val isSpeech = NativeBridge.processVadChunk(directFloatBuffer, readSamples)
 
