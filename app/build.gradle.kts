@@ -42,6 +42,15 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("release-key.jks")
+            storePassword = "translator123"
+            keyAlias = "translator"
+            keyPassword = "translator123"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -49,7 +58,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             isDebuggable = true

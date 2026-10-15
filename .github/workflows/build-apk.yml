@@ -36,16 +36,27 @@ jobs:
           chmod +x ./setup_dependencies.sh
           ./setup_dependencies.sh
 
-      - name: Build APK with Gradle
+      - name: Build Signed Release APK with Gradle
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-android.outputs.sdk-path }}/ndk/26.1.10909125
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleDebug --stacktrace --no-daemon
+          ./gradlew assembleRelease --stacktrace --no-daemon
 
-      - name: Upload Output APK
+      - name: Upload Output APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: voice-translator-arm64-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 14
+          name: voice-translator-arm64-signed-release
+          path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 30
+
+      - name: Create GitHub Release with APK
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        with:
+          tag_name: v1.0.0
+          name: "Offline Voice Translator v1.0.0 (Signed APK)"
+          body: "100% On-Device AI Voice Translator for Samsung Galaxy Z Fold 4 (SM-F936B, Snapdragon 8+ Gen 1, arm64-v8a). Digitally signed."
+          files: app/build/outputs/apk/release/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
