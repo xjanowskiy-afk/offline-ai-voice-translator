@@ -17,7 +17,7 @@
 struct PipelineEngine {
     SherpaOnnxVoiceActivityDetector* vad = nullptr;
     const SherpaOnnxOnlineRecognizer* asr = nullptr;
-    SherpaOnnxOnlineStream* asrStream = nullptr;
+    const SherpaOnnxOnlineStream* asrStream = nullptr;
 
     const SherpaOnnxOfflineTts* ttsRu = nullptr;
     const SherpaOnnxOfflineTts* ttsDe = nullptr;
@@ -188,7 +188,7 @@ JNIEXPORT jboolean JNICALL
 Java_com_translator_offline_NativeBridge_isAsrEndpoint(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(g_pipeline.mtx);
     if (!g_pipeline.asr || !g_pipeline.asrStream) return JNI_FALSE;
-    return SherpaOnnxOnlineRecognizerIsEndpoint(g_pipeline.asr, g_pipeline.asrStream) ? JNI_TRUE : JNI_FALSE;
+    return SherpaOnnxOnlineStreamIsEndpoint(g_pipeline.asr, g_pipeline.asrStream) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -276,8 +276,13 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
 
     llama_batch batch = llama_batch_init(2048, 0, 1);
     for (size_t i = 0; i < tokens_list.size(); i++) {
-        llama_batch_add(batch, tokens_list[i], i, { 0 }, false);
+        batch.token[i] = tokens_list[i];
+        batch.pos[i] = i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = false;
     }
+    batch.n_tokens = tokens_list.size();
     batch.logits[batch.n_tokens - 1] = true;
 
     if (llama_decode(g_pipeline.llmCtx, batch) != 0) {
@@ -314,8 +319,12 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
             env->DeleteLocalRef(jPiece);
         }
 
-        llama_batch_clear(batch);
-        llama_batch_add(batch, new_token_id, n_cur, { 0 }, true);
+        batch.n_tokens = 1;
+        batch.token[0] = new_token_id;
+        batch.pos[0] = n_cur;
+        batch.n_seq_id[0] = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0] = true;
 
         n_decode++;
         n_cur++;
