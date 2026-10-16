@@ -131,17 +131,21 @@ class MainActivity : ComponentActivity() {
 
                         LaunchedEffect(Unit) {
                             startAndBindServiceSafely()
-                            WindowInfoTracker.getOrCreate(this@MainActivity)
-                                .windowLayoutInfo(this@MainActivity)
-                                .collectLatest { layoutInfo ->
-                                    val foldingFeature = layoutInfo.displayFeatures
-                                        .filterIsInstance<FoldingFeature>()
-                                        .firstOrNull()
+                            try {
+                                WindowInfoTracker.getOrCreate(this@MainActivity)
+                                    .windowLayoutInfo(this@MainActivity)
+                                    .collectLatest { layoutInfo ->
+                                        val foldingFeature = layoutInfo.displayFeatures
+                                            .filterIsInstance<FoldingFeature>()
+                                            .firstOrNull()
 
-                                    isTabletopMode = foldingFeature != null &&
-                                            foldingFeature.state == FoldingFeature.State.HALF_OPENED &&
-                                            foldingFeature.orientation == FoldingFeature.Orientation.HORIZONTAL
-                                }
+                                        isTabletopMode = foldingFeature != null &&
+                                                foldingFeature.state == FoldingFeature.State.HALF_OPENED &&
+                                                foldingFeature.orientation == FoldingFeature.Orientation.HORIZONTAL
+                                    }
+                            } catch (e: Throwable) {
+                                com.translator.offline.ui.AppLogger.log("WindowInfoTracker error: ${e.message}")
+                            }
                         }
 
                         if (!isSetupDone) {

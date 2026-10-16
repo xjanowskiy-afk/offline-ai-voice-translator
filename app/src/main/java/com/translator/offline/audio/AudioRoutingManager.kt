@@ -38,19 +38,26 @@ class AudioRoutingManager(
     }
 
     init {
-        audioManager.registerAudioDeviceCallback(deviceCallback, null)
-        checkBluetoothStatus()
+        try {
+            audioManager.registerAudioDeviceCallback(deviceCallback, null)
+            checkBluetoothStatus()
+        } catch (_: Throwable) {}
     }
 
     private fun checkBluetoothStatus() {
-        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        val hasBt = devices.any {
-            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    it.type == 26 // AudioDeviceInfo.TYPE_BLE_HEADSET (API 31+)
+        try {
+            val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            val hasBt = devices.any {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == 26 // AudioDeviceInfo.TYPE_BLE_HEADSET (API 31+)
+            }
+            _isBluetoothConnected.value = hasBt
+            onOutputRouteChanged(hasBt)
+        } catch (_: Throwable) {
+            _isBluetoothConnected.value = false
+            onOutputRouteChanged(false)
         }
-        _isBluetoothConnected.value = hasBt
-        onOutputRouteChanged(hasBt)
     }
 
     fun setMode(mode: AudioTranslationMode) {
