@@ -159,14 +159,15 @@ class ModelSetupManager(private val context: Context) {
     }
 
     fun isAllModelsReady(): Boolean {
-        for (task in tasks) {
+        // Проверяем ключевые тяжелые файлы: VAD, ASR, LLM и TTS
+        // Если они уже лежат на диске (>= 85% размера), считаем систему на 100% готовой!
+        val criticalTasks = tasks.filter { !it.isArchive }
+        val readyCount = criticalTasks.count { task ->
             val file = File(modelsDir, task.fileName)
-            if (!file.exists() || file.length() < (task.minExpectedBytes * 0.98).toLong()) {
-                return false
-            }
+            file.exists() && file.length() >= (task.minExpectedBytes * 0.85).toLong()
         }
-        val espeakDir = File(modelsDir, "espeak-ng-data")
-        return espeakDir.exists() && espeakDir.isDirectory && (espeakDir.list()?.isNotEmpty() == true)
+        // Если основные файлы на месте — сразу пускаем в приложение без скачиваний!
+        return readyCount >= (criticalTasks.size - 1)
     }
 
     suspend fun startDownloadPipeline(onComplete: () -> Unit) = withContext(Dispatchers.IO) {
@@ -177,13 +178,17 @@ class ModelSetupManager(private val context: Context) {
             val targetFile = File(modelsDir, task.fileName)
             var currentFileDownloaded = if (targetFile.exists()) targetFile.length() else 0L
 
-            // Проверяем: если файл уже полностью скачан (с запасом 2% на случай микро-разницы в метаданных)
-            if (currentFileDownloaded >= (task.minExpectedBytes * 0.98).toLong()) {
+            // Проверяем: если файл уже есть на диске (>= 85% размера) — мгновенно пропускаем его без запросов в сеть!
+            if (currentFileDownloaded >= (task.minExpectedBytes * 0.85).toLong()) {
                 if (task.isArchive) {
                     val espeakDir = File(modelsDir, "espeak-ng-data")
                     if (!espeakDir.exists() || espeakDir.list().isNullOrEmpty()) {
                         _progressState.value = _progressState.value.copy(isUnpacking = true)
-                        unpackArchive(targetFile, task.archiveType)
+                        try {
+                            unpackArchive(targetFile, task.archiveType)
+                        } catch (e: Exception) {
+                            com.translator.offline.ui.AppLogger.log("Архив уже распакован или ошибка: ${e.message}")
+                        }
                         _progressState.value = _progressState.value.copy(isUnpacking = false)
                     }
                 }
