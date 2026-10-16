@@ -9,6 +9,8 @@ import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -43,6 +45,15 @@ class MainActivity : ComponentActivity() {
             s.onNewTranslationToken = { token, isEnd ->
                 viewModel.onTranslationToken(token, isEnd)
             }
+
+            // Передаем живую амплитуду микрофона в ViewModel для красивого эквалайзера
+            s.captureEngine?.let { engine ->
+                lifecycleScope.launch {
+                    engine.audioAmplitude.collect { amp ->
+                        viewModel.setAudioAmplitude(amp)
+                    }
+                }
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -54,6 +65,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setupManager = ModelSetupManager(this)
+
+        // Если модели уже загружены, автоматически инициализируем нейросети в RAM при старте
+        if (setupManager.isAllModelsReady()) {
+            viewModel.initEngines(setupManager.modelsDir) { success ->
+                com.translator.offline.ui.AppLogger.log("Автозагрузка AI при старте: $success")
+            }
+        }
 
         viewModel.onToggleRecordingCallback = { start ->
             val s = service

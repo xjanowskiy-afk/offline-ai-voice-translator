@@ -89,7 +89,12 @@ class TranslatorForegroundService : Service() {
         val recognizedText = NativeBridge.getAsrResult().trim()
         NativeBridge.resetAsrStream()
 
-        if (recognizedText.isEmpty()) return
+        if (recognizedText.isEmpty()) {
+            AppLogger.log("ASR: сегмент завершен, но текст не распознан (тишина или неразборчиво)")
+            return
+        }
+
+        AppLogger.log("ASR распознано: \"$recognizedText\"")
 
         serviceScope.launch(Dispatchers.Main) {
             onNewRecognition?.invoke(recognizedText)

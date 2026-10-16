@@ -49,6 +49,8 @@ fun TranslatorMainScreen(
     val dstLang by viewModel.targetLanguage.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val streamingText by viewModel.currentStreamingText.collectAsState()
+    val audioAmp by viewModel.audioAmplitude.collectAsState()
+    val isEnginesReady by viewModel.isEnginesReady.collectAsState()
 
     var activeMode by remember { mutableStateOf(TranslationMode.HANDS_FREE) }
     var visualState by remember { mutableStateOf(PipelineVisualState.IDLE) }
@@ -74,6 +76,7 @@ fun TranslatorMainScreen(
             .background(Color(0xFF090D16))
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
+        // Top Bar (Air-gapped status + Audio & Logs buttons)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -81,17 +84,23 @@ fun TranslatorMainScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xFF0F1E2E))
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
                 Box(
                     modifier = Modifier
-                        .size(8.dp)
+                        .size(7.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF10B981))
+                        .background(if (isEnginesReady) Color(0xFF10B981) else Color(0xFFF59E0B))
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "100% OFFLINE AIR-GAPPED",
-                    color = Color(0xFF10B981),
+                    text = if (isEnginesReady) "100% OFFLINE AI" else "ЗАГРУЗКА AI...",
+                    color = if (isEnginesReady) Color(0xFF34D399) else Color(0xFFFBBF24),
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold
@@ -99,17 +108,31 @@ fun TranslatorMainScreen(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onOpenAudioSettings, modifier = Modifier.size(32.dp)) {
+                IconButton(
+                    onClick = onOpenAudioSettings,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF1E293B))
+                ) {
                     Icon(Icons.Default.Headphones, contentDescription = "Аудио", tint = Color(0xFF38BDF8), modifier = Modifier.size(20.dp))
                 }
-                IconButton(onClick = onOpenDebugLogs, modifier = Modifier.size(32.dp)) {
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = onOpenDebugLogs,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF1E293B))
+                ) {
                     Icon(Icons.Default.Terminal, contentDescription = "Логи", tint = Color(0xFF94A3B8), modifier = Modifier.size(20.dp))
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
+        // Language Switch Card
         LanguageSwitchHeader(
             srcLang = srcLang,
             dstLang = dstLang,
@@ -119,36 +142,72 @@ fun TranslatorMainScreen(
             }
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-        ) {
-            items(messages) { msg ->
-                LiveMessageCard(msg)
+        // Message Feed or Empty State
+        if (messages.isEmpty() && streamingText.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Translate,
+                        contentDescription = null,
+                        tint = Color(0xFF334155),
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Готов к синхронному переводу",
+                        color = Color(0xFF64748B),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Включите микрофон и говорите — распознавание и перевод отобразятся здесь",
+                        color = Color(0xFF475569),
+                        fontSize = 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
             }
-            if (streamingText.isNotEmpty()) {
-                item {
-                    StreamingLiveBubble(streamingText)
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(messages) { msg ->
+                    LiveMessageCard(msg)
+                }
+                if (streamingText.isNotEmpty()) {
+                    item {
+                        StreamingLiveBubble(streamingText)
+                    }
                 }
             }
         }
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(90.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            AudioVisualizer(
-                visualState = visualState,
-                amplitudeNorm = if (isRecording) 0.6f else 0.0f
-            )
-        }
+        Spacer(modifier = Modifier.height(8.dp))
 
+        // Premium Soundbar Waveform (Apple Style)
+        AudioVisualizer(
+            visualState = visualState,
+            amplitudeNorm = if (isRecording) audioAmp else 0.0f
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Mode switch pills (АВТО-СИНХРОН / РАЦИЯ)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -170,8 +229,9 @@ fun TranslatorMainScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
+        // Mic Button
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -181,13 +241,13 @@ fun TranslatorMainScreen(
             val micBg = if (isRecording) {
                 Brush.radialGradient(listOf(Color(0xFFEF4444), Color(0xFF991B1B)))
             } else {
-                Brush.radialGradient(listOf(Color(0xFF3B82F6), Color(0xFF1D4ED8)))
+                Brush.radialGradient(listOf(Color(0xFF2563EB), Color(0xFF1D4ED8)))
             }
 
             Box(
                 modifier = Modifier
                     .size(76.dp)
-                    .shadow(16.dp, CircleShape, spotColor = if (isRecording) Color.Red else Color.Cyan)
+                    .shadow(16.dp, CircleShape, spotColor = if (isRecording) Color.Red else Color(0xFF38BDF8))
                     .clip(CircleShape)
                     .background(micBg)
                     .pointerInput(activeMode) {
@@ -227,36 +287,58 @@ fun TranslatorMainScreen(
 fun LanguageSwitchHeader(srcLang: String, dstLang: String, onSwap: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B).copy(alpha = 0.5f))
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF131D31).copy(alpha = 0.85f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
         Row(
             modifier = Modifier
-                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
                 .fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = if (srcLang == "ru") "🇷🇺 РУССКИЙ" else "🇩🇪 DEUTSCH",
-                color = Color(0xFF60A5FA),
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp
-            )
+            Column {
+                Text(
+                    text = "ИСТОЧНИК",
+                    fontSize = 10.sp,
+                    color = Color(0xFF64748B),
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = if (srcLang == "ru") "🇷🇺 Русский" else "🇩🇪 Deutsch",
+                    color = Color(0xFF60A5FA),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            }
+
             IconButton(
                 onClick = onSwap,
                 modifier = Modifier
-                    .size(36.dp)
-                    .background(Color(0xFF334155), CircleShape)
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF1E293B))
             ) {
-                Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color.White)
+                Icon(Icons.Default.SwapHoriz, contentDescription = "Поменять местами", tint = Color.White)
             }
-            Text(
-                text = if (dstLang == "de") "🇩🇪 DEUTSCH" else "🇷🇺 РУССКИЙ",
-                color = Color(0xFF34D399),
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp
-            )
+
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "ПЕРЕВОД",
+                    fontSize = 10.sp,
+                    color = Color(0xFF64748B),
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = if (dstLang == "de") "🇩🇪 Deutsch" else "🇷🇺 Русский",
+                    color = Color(0xFF34D399),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            }
         }
     }
 }
@@ -266,23 +348,65 @@ fun LiveMessageCard(msg: MessageLog) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF131D31).copy(alpha = 0.8f))
+            .clip(RoundedCornerShape(16.dp)),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF131F33).copy(alpha = 0.9f))
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            // Source Recognized Text
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF60A5FA))
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "СКАЗАНО",
+                    color = Color(0xFF64748B),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = msg.sourceText,
-                color = Color(0xFF94A3B8),
-                fontSize = 14.sp
+                color = Color(0xFFE2E8F0),
+                fontSize = 15.sp,
+                lineHeight = 20.sp
             )
+
+            // Translation Block
             if (msg.translatedText.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Divider(color = Color(0xFF1E293B), thickness = 1.dp)
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF34D399))
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "ПЕРЕВОД",
+                        color = Color(0xFF10B981),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = msg.translatedText,
                     color = Color(0xFF34D399),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 22.sp
                 )
             }
         }
@@ -294,14 +418,33 @@ fun StreamingLiveBubble(tokenStream: String) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f), RoundedCornerShape(12.dp)),
+            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2338))
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text("Перевод в реальном времени...", fontSize = 11.sp, color = Color(0xFF38BDF8), fontFamily = FontFamily.Monospace)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(tokenStream, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 2.dp,
+                    color = Color(0xFF38BDF8)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    "Генерация перевода...",
+                    fontSize = 11.sp,
+                    color = Color(0xFF38BDF8),
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = tokenStream,
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 22.sp
+            )
         }
     }
 }
@@ -310,10 +453,10 @@ fun StreamingLiveBubble(tokenStream: String) {
 fun SegmentedModeButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(if (isSelected) Color(0xFF2563EB) else Color(0xFF1E293B))
             .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .padding(horizontal = 14.dp, vertical = 7.dp)
     ) {
         Text(
             text = text,

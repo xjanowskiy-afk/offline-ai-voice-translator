@@ -31,6 +31,12 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     private val _isRecording = MutableStateFlow(false)
     val isRecording = _isRecording.asStateFlow()
 
+    private val _audioAmplitude = MutableStateFlow(0.0f)
+    val audioAmplitude = _audioAmplitude.asStateFlow()
+
+    private val _isEnginesReady = MutableStateFlow(false)
+    val isEnginesReady = _isEnginesReady.asStateFlow()
+
     private val _sourceLanguage = MutableStateFlow("ru")
     val sourceLanguage = _sourceLanguage.asStateFlow()
 
@@ -41,6 +47,10 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     val swapLeftRight = _swapLeftRight.asStateFlow()
 
     var onToggleRecordingCallback: ((Boolean) -> Unit)? = null
+
+    fun setAudioAmplitude(amp: Float) {
+        _audioAmplitude.value = amp
+    }
 
     fun initEngines(modelsDir: File, onDone: (Boolean) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -64,6 +74,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             val allOk = vadOk && asrOk && llmOk && ttsOk
             AppLogger.log("Результат инициализации движков: $allOk (VAD=$vadOk, ASR=$asrOk, LLM=$llmOk, TTS=$ttsOk)")
             launch(Dispatchers.Main) {
+                _isEnginesReady.value = allOk
                 onDone(allOk)
             }
         }

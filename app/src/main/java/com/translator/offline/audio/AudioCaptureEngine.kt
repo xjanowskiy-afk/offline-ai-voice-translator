@@ -56,37 +56,72 @@ class AudioCaptureEngine(
         )
         val bufferSize = maxOf(minBufferSize, FRAME_BYTES * 4)
 
-        val record = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
-        )
+        var record: AudioRecord? = null
+        try {
+            record = AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize
+            )
+        } catch (e: Exception) {
+            com.translator.offline.ui.AppLogger.log("Ошибка создания AudioRecord VOICE_COMMUNICATION: ${e.message}")
+        }
 
-        if (record.state != AudioRecord.STATE_INITIALIZED) {
-            Log.e(TAG, "Ошибка инициализации AudioRecord!")
-            record.release()
+        if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+            record?.release()
+            com.translator.offline.ui.AppLogger.log("Пробуем резервный AudioSource.MIC...")
+            try {
+                record = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
+            } catch (e: Exception) {
+                com.translator.offline.ui.AppLogger.log("Ошибка создания AudioRecord MIC: ${e.message}")
+            }
+        }
+
+        if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+            com.translator.offline.ui.AppLogger.log("КРИТИЧЕСКАЯ ОШИБКА: AudioRecord не инициализирован!")
+            record?.release()
             return
         }
 
         val audioSessionId = record.audioSessionId
 
         if (AcousticEchoCanceler.isAvailable()) {
-            echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply {
-                enabled = true
+            try {
+                echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply {
+                    enabled = true
+                }
+            } catch (e: Exception) {
+                com.translator.offline.ui.AppLogger.log("AcousticEchoCanceler недоступен: ${e.message}")
             }
         }
 
         if (NoiseSuppressor.isAvailable()) {
-            noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply {
-                enabled = true
+            try {
+                noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply {
+                    enabled = true
+                }
+            } catch (e: Exception) {
+                com.translator.offline.ui.AppLogger.log("NoiseSuppressor недоступен: ${e.message}")
             }
         }
 
         audioRecord = record
-        record.startRecording()
-        isCapturing = true
+        try {
+            record.startRecording()
+            isCapturing = true
+            com.translator.offline.ui.AppLogger.log("AudioRecord успешно запущен: 16kHz MONO (AudioSource=${record.audioSource})")
+        } catch (e: Exception) {
+            com.translator.offline.ui.AppLogger.log("Ошибка startRecording: ${e.message}")
+            return
+        }
 
         captureJob = captureScope.launch {
             runCaptureLoop()
@@ -96,12 +131,23 @@ class AudioCaptureEngine(
     private suspend fun runCaptureLoop() {
         var consecutiveSilenceFrames = 0
         var hasActiveSpeech = false
+        var loggedFirstSamples = false
 
         while (currentCoroutineContext().isActive && isCapturing) {
             val record = audioRecord ?: break
 
             val readSamples = record.read(pcmShortArray, 0, SAMPLES_PER_FRAME)
-            if (readSamples <= 0) continue
+            if (readSamples <= 0) {
+                if (readSamples < 0) {
+                    com.translator.offline.ui.AppLogger.log("AudioRecord.read код ошибки: $readSamples")
+                }
+                continue
+            }
+
+            if (!loggedFirstSamples) {
+                loggedFirstSamples = true
+                com.translator.offline.ui.AppLogger.log("Микрофон активно считывает PCM аудиоданные ($readSamples сэмплов/фрейм)")
+            }
 
             if (isHalfDuplexBlocked) {
                 consecutiveSilenceFrames = 0
@@ -124,6 +170,9 @@ class AudioCaptureEngine(
             val isSpeech = NativeBridge.processVadChunk(directFloatBuffer, readSamples)
 
             if (isSpeech) {
+                if (!hasActiveSpeech) {
+                    com.translator.offline.ui.AppLogger.log("VAD: обнаружен человеческий голос (речь)!")
+                }
                 hasActiveSpeech = true
                 consecutiveSilenceFrames = 0
                 NativeBridge.feedAudioToAsr(directFloatBuffer, readSamples)
@@ -135,6 +184,7 @@ class AudioCaptureEngine(
                     }
 
                     if (consecutiveSilenceFrames >= 18 || NativeBridge.isAsrEndpoint()) {
+                        com.translator.offline.ui.AppLogger.log("VAD: завершение речевого сегмента, отправка в ASR...")
                         hasActiveSpeech = false
                         consecutiveSilenceFrames = 0
                         onSpeechSegmentReady()
