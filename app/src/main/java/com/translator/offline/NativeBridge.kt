@@ -4,11 +4,29 @@ import java.nio.ByteBuffer
 
 object NativeBridge {
 
-    init {
-        System.loadLibrary("onnxruntime")
-        System.loadLibrary("sherpa-onnx-jni")
-        System.loadLibrary("native-pipeline")
+    private var isLoaded = false
+    private var loadError: String? = null
+
+    @Synchronized
+    fun loadLibrariesSafely(): Boolean {
+        if (isLoaded) return true
+        if (loadError != null) return false
+
+        try {
+            System.loadLibrary("onnxruntime")
+            System.loadLibrary("sherpa-onnx-jni")
+            System.loadLibrary("native-pipeline")
+            isLoaded = true
+            return true
+        } catch (t: Throwable) {
+            loadError = "Native library load failed: ${t.javaClass.simpleName} - ${t.message}"
+            com.translator.offline.ui.AppLogger.log("ERROR: $loadError")
+            return false
+        }
     }
+
+    fun getLoadError(): String? = loadError
+    fun isNativeReady(): Boolean = isLoaded
 
     fun interface TokenCallback {
         fun onToken(token: String, isEndOfGeneration: Boolean)

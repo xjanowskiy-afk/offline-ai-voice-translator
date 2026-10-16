@@ -151,7 +151,9 @@ class AudioCaptureEngine(
 
             if (isHalfDuplexBlocked) {
                 consecutiveSilenceFrames = 0
-                NativeBridge.resetVad()
+                if (NativeBridge.isNativeReady()) {
+                    NativeBridge.resetVad()
+                }
                 continue
             }
 
@@ -167,7 +169,11 @@ class AudioCaptureEngine(
             val rms = Math.sqrt(sumSq / readSamples).toFloat()
             _audioAmplitude.value = (rms * 5.0f).coerceIn(0.0f, 1.0f)
 
-            val isSpeech = NativeBridge.processVadChunk(directFloatBuffer, readSamples)
+            val isSpeech = if (NativeBridge.isNativeReady()) {
+                NativeBridge.processVadChunk(directFloatBuffer, readSamples)
+            } else {
+                false
+            }
 
             if (isSpeech) {
                 if (!hasActiveSpeech) {
@@ -175,15 +181,20 @@ class AudioCaptureEngine(
                 }
                 hasActiveSpeech = true
                 consecutiveSilenceFrames = 0
-                NativeBridge.feedAudioToAsr(directFloatBuffer, readSamples)
+                if (NativeBridge.isNativeReady()) {
+                    NativeBridge.feedAudioToAsr(directFloatBuffer, readSamples)
+                }
             } else {
                 if (hasActiveSpeech) {
                     consecutiveSilenceFrames++
                     if (consecutiveSilenceFrames <= 5) {
-                        NativeBridge.feedAudioToAsr(directFloatBuffer, readSamples)
+                        if (NativeBridge.isNativeReady()) {
+                            NativeBridge.feedAudioToAsr(directFloatBuffer, readSamples)
+                        }
                     }
 
-                    if (consecutiveSilenceFrames >= 18 || NativeBridge.isAsrEndpoint()) {
+                    val isEndpoint = if (NativeBridge.isNativeReady()) NativeBridge.isAsrEndpoint() else false
+                    if (consecutiveSilenceFrames >= 18 || isEndpoint) {
                         com.translator.offline.ui.AppLogger.log("VAD: завершение речевого сегмента, отправка в ASR...")
                         hasActiveSpeech = false
                         consecutiveSilenceFrames = 0

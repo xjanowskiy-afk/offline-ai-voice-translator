@@ -68,7 +68,11 @@ class TranslatorForegroundService : Service() {
         voicePipeline = StreamingVoicePipeline(
             sampleRate = 22050,
             ttsSynthesizeFn = { text, isGerman ->
-                NativeBridge.synthesizeSpeechChunkByLang(text, isGerman, speakerId = 0)
+                if (NativeBridge.isNativeReady()) {
+                    NativeBridge.synthesizeSpeechChunkByLang(text, isGerman, speakerId = 0)
+                } else {
+                    FloatArray(0)
+                }
             },
             onSpeakingStateChanged = { speaking ->
                 // Если играет динамик телефона (TABLE_SPEAKER) - блокируем микрофон для защиты от эха
@@ -86,6 +90,11 @@ class TranslatorForegroundService : Service() {
     }
 
     private fun processRecognizedSpeech() {
+        if (!NativeBridge.isNativeReady()) {
+            AppLogger.log("ASR: нативные движки ещё не загружены")
+            return
+        }
+
         val recognizedText = NativeBridge.getAsrResult().trim()
         NativeBridge.resetAsrStream()
 
@@ -207,7 +216,9 @@ class TranslatorForegroundService : Service() {
         captureEngine?.stop()
         voicePipeline?.release()
         routingManager?.release()
-        NativeBridge.releaseAll()
+        if (NativeBridge.isNativeReady()) {
+            NativeBridge.releaseAll()
+        }
         serviceScope.cancel()
     }
 }

@@ -97,6 +97,16 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     return@launch
                 }
 
+                if (!NativeBridge.loadLibrariesSafely()) {
+                    val err = NativeBridge.getLoadError() ?: "Неизвестная ошибка загрузки .so библиотек"
+                    AppLogger.log("ОШИБКА C++ библиотек: $err")
+                    launch(Dispatchers.Main) {
+                        _isEnginesReady.value = false
+                        onDone(false)
+                    }
+                    return@launch
+                }
+
                 val vadOk = NativeBridge.initVad(vadFile.absolutePath)
                 val asrOk = NativeBridge.initAsr(
                     encFile.absolutePath,

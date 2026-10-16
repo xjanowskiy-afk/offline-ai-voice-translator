@@ -85,36 +85,37 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setupManager = ModelSetupManager(this)
+        try {
+            setupManager = ModelSetupManager(this)
 
-        // Инициализируем нейросети в RAM при старте только если ВСЕ файлы 100% на месте
-        if (setupManager.isAllModelsReady()) {
-            viewModel.initEngines(setupManager.modelsDir) { success ->
-                com.translator.offline.ui.AppLogger.log("Автозагрузка AI при старте: $success")
-            }
-        }
-
-        viewModel.onToggleRecordingCallback = { start ->
-            val s = service
-            if (s != null) {
-                if (start) {
-                    s.captureEngine?.start()
-                } else {
-                    s.captureEngine?.stop()
+            // Инициализируем нейросети в RAM при старте только если ВСЕ файлы 100% на месте
+            if (setupManager.isAllModelsReady()) {
+                viewModel.initEngines(setupManager.modelsDir) { success ->
+                    com.translator.offline.ui.AppLogger.log("Автозагрузка AI при старте: $success")
                 }
             }
-        }
 
-        setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    var hasAllPermissions by remember {
-                        mutableStateOf(
-                            PermissionAndSystemHelper.hasRecordAudioPermission(this@MainActivity) &&
-                                    PermissionAndSystemHelper.hasNotificationPermission(this@MainActivity) &&
-                                    PermissionAndSystemHelper.isIgnoringBatteryOptimizations(this@MainActivity)
-                        )
+            viewModel.onToggleRecordingCallback = { start ->
+                val s = service
+                if (s != null) {
+                    if (start) {
+                        s.captureEngine?.start()
+                    } else {
+                        s.captureEngine?.stop()
                     }
+                }
+            }
+
+            setContent {
+                MaterialTheme {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        var hasAllPermissions by remember {
+                            mutableStateOf(
+                                PermissionAndSystemHelper.hasRecordAudioPermission(this@MainActivity) &&
+                                        PermissionAndSystemHelper.hasNotificationPermission(this@MainActivity) &&
+                                        PermissionAndSystemHelper.isIgnoringBatteryOptimizations(this@MainActivity)
+                            )
+                        }
 
                     if (!hasAllPermissions) {
                         PermissionsGuardScreen(
@@ -195,6 +196,16 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+        } catch (t: Throwable) {
+            val sw = java.io.StringWriter()
+            t.printStackTrace(java.io.PrintWriter(sw))
+            val intent = Intent(this, CrashAndLogActivity::class.java).apply {
+                putExtra(CrashAndLogActivity.EXTRA_CRASH_INFO, sw.toString())
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            startActivity(intent)
+            finish()
         }
     }
 

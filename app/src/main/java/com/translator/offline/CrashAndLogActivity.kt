@@ -46,6 +46,69 @@ class CrashAndLogActivity : ComponentActivity() {
                 "====================\n\n" +
                 crashLog
 
+        try {
+            renderComposeUi(fullReport)
+        } catch (e: Throwable) {
+            renderEmergencyViewUi(fullReport, e.message ?: "")
+        }
+    }
+
+    private fun renderEmergencyViewUi(report: String, composeError: String) {
+        val layout = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setBackgroundColor(android.graphics.Color.parseColor("#090D16"))
+            setPadding(32, 32, 32, 32)
+        }
+
+        val title = android.widget.TextView(this).apply {
+            text = "Сбой в работе приложения (Emergency Mode)"
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 18f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 0, 20)
+        }
+        layout.addView(title)
+
+        val scrollView = android.widget.ScrollView(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f
+            )
+            setBackgroundColor(android.graphics.Color.parseColor("#1E293B"))
+        }
+
+        val logView = android.widget.TextView(this).apply {
+            text = if (composeError.isNotEmpty()) "$report\n\n[Compose Render Error: $composeError]" else report
+            setTextColor(android.graphics.Color.parseColor("#F87171"))
+            textSize = 12f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(20, 20, 20, 20)
+            setTextIsSelectable(true)
+        }
+        scrollView.addView(logView)
+        layout.addView(scrollView)
+
+        val btn = android.widget.Button(this).apply {
+            text = "Скопировать полный лог ошибки"
+            setTextColor(android.graphics.Color.WHITE)
+            setBackgroundColor(android.graphics.Color.parseColor("#2563EB"))
+            setOnClickListener {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("CrashLog", logView.text.toString()))
+                Toast.makeText(this@CrashAndLogActivity, "Лог скопирован в буфер обмена!", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val btnParams = android.widget.LinearLayout.LayoutParams(
+            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topMargin = 20
+        }
+        layout.addView(btn, btnParams)
+
+        setContentView(layout)
+    }
+
+    private fun renderComposeUi(fullReport: String) {
         setContent {
             MaterialTheme {
                 Column(
