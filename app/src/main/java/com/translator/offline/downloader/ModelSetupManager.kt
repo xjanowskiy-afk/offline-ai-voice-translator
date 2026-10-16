@@ -66,76 +66,102 @@ class ModelSetupManager(private val context: Context) {
             category = ModelCategory.VAD,
             fileName = "silero_vad.onnx",
             downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
-            minExpectedBytes = 600_000L
+            minExpectedBytes = 643_854L
         ),
         DownloadTask(
             category = ModelCategory.ASR,
             fileName = "encoder.onnx",
             downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/main/encoder-epoch-99-avg-1.onnx",
-            minExpectedBytes = 75_000_000L
+            minExpectedBytes = 330_083_505L
         ),
         DownloadTask(
             category = ModelCategory.ASR,
             fileName = "decoder.onnx",
             downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/main/decoder-epoch-99-avg-1.onnx",
-            minExpectedBytes = 15_000_000L
+            minExpectedBytes = 13_876_452L
         ),
         DownloadTask(
             category = ModelCategory.ASR,
             fileName = "joiner.onnx",
             downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/main/joiner-epoch-99-avg-1.onnx",
-            minExpectedBytes = 8_000_000L
+            minExpectedBytes = 12_833_618L
         ),
         DownloadTask(
             category = ModelCategory.ASR,
             fileName = "tokens.txt",
             downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/main/tokens.txt",
-            minExpectedBytes = 300_000L
+            minExpectedBytes = 56_317L
         ),
         DownloadTask(
             category = ModelCategory.LLM,
             fileName = "qwen2.5-1.5b-instruct-q4_k_m.gguf",
             downloadUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-            minExpectedBytes = 980_000_000L
+            minExpectedBytes = 1_117_320_736L
         ),
         DownloadTask(
             category = ModelCategory.TTS,
             fileName = "de_DE-thorsten-high.onnx",
             downloadUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx",
-            minExpectedBytes = 60_000_000L
+            minExpectedBytes = 113_895_201L
         ),
         DownloadTask(
             category = ModelCategory.TTS,
             fileName = "de_DE-thorsten-high.onnx.json",
             downloadUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx.json",
-            minExpectedBytes = 4_000L
+            minExpectedBytes = 4_875L
         ),
         DownloadTask(
             category = ModelCategory.TTS,
             fileName = "ru_RU-irina-medium.onnx",
             downloadUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx",
-            minExpectedBytes = 43_000_000L
+            minExpectedBytes = 63_201_294L
         ),
         DownloadTask(
             category = ModelCategory.TTS,
             fileName = "ru_RU-irina-medium.onnx.json",
             downloadUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx.json",
-            minExpectedBytes = 4_000L
+            minExpectedBytes = 4_765L
         ),
         DownloadTask(
             category = ModelCategory.TTS,
             fileName = "espeak-ng-data.tar.bz2",
             downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2",
-            minExpectedBytes = 4_500_000L,
+            minExpectedBytes = 7_252_012L,
             isArchive = true,
             archiveType = "tar.bz2"
         )
     )
 
+    init {
+        checkExistingCompletedCategories()
+    }
+
+    private fun checkExistingCompletedCategories() {
+        val completed = mutableSetOf<ModelCategory>()
+        for (cat in ModelCategory.values()) {
+            val catTasks = tasks.filter { it.category == cat }
+            val allDone = catTasks.all { task ->
+                val f = File(modelsDir, task.fileName)
+                f.exists() && f.length() >= (task.minExpectedBytes * 0.98).toLong()
+            }
+            if (allDone) {
+                if (cat == ModelCategory.TTS) {
+                    val espeakDir = File(modelsDir, "espeak-ng-data")
+                    if (espeakDir.exists() && espeakDir.isDirectory && (espeakDir.list()?.isNotEmpty() == true)) {
+                        completed.add(cat)
+                    }
+                } else {
+                    completed.add(cat)
+                }
+            }
+        }
+        _progressState.value = _progressState.value.copy(completedCategories = completed)
+    }
+
     fun isAllModelsReady(): Boolean {
         for (task in tasks) {
             val file = File(modelsDir, task.fileName)
-            if (!file.exists() || file.length() < task.minExpectedBytes) {
+            if (!file.exists() || file.length() < (task.minExpectedBytes * 0.98).toLong()) {
                 return false
             }
         }
@@ -151,7 +177,16 @@ class ModelSetupManager(private val context: Context) {
             val targetFile = File(modelsDir, task.fileName)
             var currentFileDownloaded = if (targetFile.exists()) targetFile.length() else 0L
 
-            if (currentFileDownloaded >= task.minExpectedBytes) {
+            // Проверяем: если файл уже полностью скачан (с запасом 2% на случай микро-разницы в метаданных)
+            if (currentFileDownloaded >= (task.minExpectedBytes * 0.98).toLong()) {
+                if (task.isArchive) {
+                    val espeakDir = File(modelsDir, "espeak-ng-data")
+                    if (!espeakDir.exists() || espeakDir.list().isNullOrEmpty()) {
+                        _progressState.value = _progressState.value.copy(isUnpacking = true)
+                        unpackArchive(targetFile, task.archiveType)
+                        _progressState.value = _progressState.value.copy(isUnpacking = false)
+                    }
+                }
                 bytesDownloadedPre += currentFileDownloaded
                 updateCompletedCategory(task.category)
                 return@forEachIndexed
@@ -165,16 +200,41 @@ class ModelSetupManager(private val context: Context) {
                 isUnpacking = false
             )
 
-            val request = Request.Builder()
-                .url(task.downloadUrl)
-                .addHeader("Range", "bytes=$currentFileDownloaded-")
-                .build()
+            val requestBuilder = Request.Builder().url(task.downloadUrl)
+            if (currentFileDownloaded > 0) {
+                requestBuilder.addHeader("Range", "bytes=$currentFileDownloaded-")
+            }
+            val request = requestBuilder.build()
 
             var speedStart = System.currentTimeMillis()
             var speedBytes = 0L
 
             try {
-                val response = client.newCall(request).execute()
+                var response = client.newCall(request).execute()
+
+                // Обработка HTTP 416 Range Not Satisfiable:
+                // Сервер возвращает 416, если запрошенный диапазон выходит за размер файла
+                if (response.code == 416) {
+                    response.close()
+                    // Если файл на диске уже имеет достаточный размер, значит он уже скачан на 100%!
+                    if (targetFile.exists() && targetFile.length() >= (task.minExpectedBytes * 0.90).toLong()) {
+                        if (task.isArchive) {
+                            _progressState.value = _progressState.value.copy(isUnpacking = true)
+                            unpackArchive(targetFile, task.archiveType)
+                            _progressState.value = _progressState.value.copy(isUnpacking = false)
+                        }
+                        bytesDownloadedPre += targetFile.length()
+                        updateCompletedCategory(task.category)
+                        return@forEachIndexed
+                    } else {
+                        // Если файл поврежден или обрублен, удаляем его и качаем с нуля
+                        targetFile.delete()
+                        currentFileDownloaded = 0L
+                        val retryReq = Request.Builder().url(task.downloadUrl).build()
+                        response = client.newCall(retryReq).execute()
+                    }
+                }
+
                 val body = response.body
                 if (!response.isSuccessful && response.code != 206) {
                     _progressState.value = _progressState.value.copy(
@@ -184,6 +244,9 @@ class ModelSetupManager(private val context: Context) {
                 }
 
                 val append = currentFileDownloaded > 0 && response.code == 206
+                if (!append) {
+                    currentFileDownloaded = 0L
+                }
                 val output = FileOutputStream(targetFile, append)
 
                 val buffer = ByteArray(64 * 1024)
@@ -249,7 +312,7 @@ class ModelSetupManager(private val context: Context) {
         val currentSet = _progressState.value.completedCategories.toMutableSet()
         val allDoneForCat = tasks.filter { it.category == cat }.all {
             val f = File(modelsDir, it.fileName)
-            f.exists() && f.length() >= it.minExpectedBytes
+            f.exists() && f.length() >= (it.minExpectedBytes * 0.98).toLong()
         }
         if (allDoneForCat) {
             currentSet.add(cat)
