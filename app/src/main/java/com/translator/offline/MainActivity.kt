@@ -32,33 +32,54 @@ class MainActivity : ComponentActivity() {
     private var isBound = false
     private lateinit var setupManager: ModelSetupManager
 
+    private var amplitudeJob: kotlinx.coroutines.Job? = null
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            val localBinder = binder as TranslatorForegroundService.LocalBinder
-            val s = localBinder.getService()
-            service = s
-            isBound = true
+            try {
+                val localBinder = binder as TranslatorForegroundService.LocalBinder
+                val s = localBinder.getService()
+                service = s
+                isBound = true
 
-            s.onNewRecognition = { text ->
-                viewModel.onNewSourceRecognized(text)
-            }
-            s.onNewTranslationToken = { token, isEnd ->
-                viewModel.onTranslationToken(token, isEnd)
-            }
+                s.onNewRecognition = { text ->
+                    viewModel.onNewSourceRecognized(text)
+                }
+                s.onNewTranslationToken = { token, isEnd ->
+                    viewModel.onTranslationToken(token, isEnd)
+                }
 
-            // Передаем живую амплитуду микрофона в ViewModel для красивого эквалайзера
-            s.captureEngine?.let { engine ->
-                lifecycleScope.launch {
-                    engine.audioAmplitude.collect { amp ->
-                        viewModel.setAudioAmplitude(amp)
+                // Передаем живую амплитуду микрофона в ViewModel для красивого эквалайзера
+                amplitudeJob?.cancel()
+                s.captureEngine?.let { engine ->
+                    amplitudeJob = lifecycleScope.launch {
+                        engine.audioAmplitude.collect { amp ->
+                            viewModel.setAudioAmplitude(amp)
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                com.translator.offline.ui.AppLogger.log("Ошибка связывания сервиса: ${e.message}")
             }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            amplitudeJob?.cancel()
+            amplitudeJob = null
             service = null
             isBound = false
+        }
+    }
+
+    private fun startAndBindServiceSafely() {
+        if (isBound) return
+        if (!PermissionAndSystemHelper.hasRecordAudioPermission(this)) return
+        try {
+            val serviceIntent = Intent(this, TranslatorForegroundService::class.java)
+            ContextCompat.startForegroundService(this, serviceIntent)
+            bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
+        } catch (e: Exception) {
+            com.translator.offline.ui.AppLogger.log("Не удалось запустить ForegroundService: ${e.message}")
         }
     }
 
@@ -66,7 +87,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setupManager = ModelSetupManager(this)
 
-        // Если модели уже загружены, автоматически инициализируем нейросети в RAM при старте
+        // Инициализируем нейросети в RAM при старте только если ВСЕ файлы 100% на месте
         if (setupManager.isAllModelsReady()) {
             viewModel.initEngines(setupManager.modelsDir) { success ->
                 com.translator.offline.ui.AppLogger.log("Автозагрузка AI при старте: $success")
@@ -99,9 +120,7 @@ class MainActivity : ComponentActivity() {
                         PermissionsGuardScreen(
                             onAllPermissionsGranted = {
                                 hasAllPermissions = true
-                                val serviceIntent = Intent(this@MainActivity, TranslatorForegroundService::class.java)
-                                ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
-                                bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
+                                startAndBindServiceSafely()
                             }
                         )
                     } else {
@@ -111,11 +130,7 @@ class MainActivity : ComponentActivity() {
                         var showDebugSheet by remember { mutableStateOf(false) }
 
                         LaunchedEffect(Unit) {
-                            if (!isBound) {
-                                val serviceIntent = Intent(this@MainActivity, TranslatorForegroundService::class.java)
-                                ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
-                                bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
-                            }
+                            startAndBindServiceSafely()
                             WindowInfoTracker.getOrCreate(this@MainActivity)
                                 .windowLayoutInfo(this@MainActivity)
                                 .collectLatest { layoutInfo ->

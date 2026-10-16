@@ -159,15 +159,15 @@ class ModelSetupManager(private val context: Context) {
     }
 
     fun isAllModelsReady(): Boolean {
-        // Проверяем ключевые тяжелые файлы: VAD, ASR, LLM и TTS
-        // Если они уже лежат на диске (>= 85% размера), считаем систему на 100% готовой!
+        // Проверяем наличие всех критических файлов нейросетей
         val criticalTasks = tasks.filter { !it.isArchive }
-        val readyCount = criticalTasks.count { task ->
+        val allCriticalPresent = criticalTasks.all { task ->
             val file = File(modelsDir, task.fileName)
             file.exists() && file.length() >= (task.minExpectedBytes * 0.85).toLong()
         }
-        // Если основные файлы на месте — сразу пускаем в приложение без скачиваний!
-        return readyCount >= (criticalTasks.size - 1)
+        val espeakDir = File(modelsDir, "espeak-ng-data")
+        val espeakReady = espeakDir.exists() && espeakDir.isDirectory && (espeakDir.list()?.isNotEmpty() == true)
+        return allCriticalPresent && espeakReady
     }
 
     suspend fun startDownloadPipeline(onComplete: () -> Unit) = withContext(Dispatchers.IO) {

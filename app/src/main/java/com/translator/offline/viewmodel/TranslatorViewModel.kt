@@ -53,29 +53,78 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun initEngines(modelsDir: File, onDone: (Boolean) -> Unit) {
-        viewModelScope.launch(Dispatchers.IO) {
-            AppLogger.log("Инициализация C++ нейросетей в RAM...")
-            val vadOk = NativeBridge.initVad(File(modelsDir, "silero_vad.onnx").absolutePath)
-            val asrOk = NativeBridge.initAsr(
-                File(modelsDir, "encoder.onnx").absolutePath,
-                File(modelsDir, "decoder.onnx").absolutePath,
-                File(modelsDir, "joiner.onnx").absolutePath,
-                File(modelsDir, "tokens.txt").absolutePath
-            )
-            val llmOk = NativeBridge.initLlm(File(modelsDir, "qwen2.5-1.5b-instruct-q4_k_m.gguf").absolutePath)
-            val ttsOk = NativeBridge.initTtsDual(
-                File(modelsDir, "ru_RU-irina-medium.onnx").absolutePath,
-                File(modelsDir, "ru_RU-irina-medium.onnx.json").absolutePath,
-                File(modelsDir, "de_DE-thorsten-high.onnx").absolutePath,
-                File(modelsDir, "de_DE-thorsten-high.onnx.json").absolutePath,
-                File(modelsDir, "espeak-ng-data").absolutePath
-            )
+        if (_isEnginesReady.value) {
+            AppLogger.log("Нейросети уже загружены в RAM, повторная инициализация пропущена.")
+            onDone(true)
+            return
+        }
 
-            val allOk = vadOk && asrOk && llmOk && ttsOk
-            AppLogger.log("Результат инициализации движков: $allOk (VAD=$vadOk, ASR=$asrOk, LLM=$llmOk, TTS=$ttsOk)")
-            launch(Dispatchers.Main) {
-                _isEnginesReady.value = allOk
-                onDone(allOk)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                AppLogger.log("Инициализация C++ нейросетей в RAM...")
+
+                val vadFile = File(modelsDir, "silero_vad.onnx")
+                val encFile = File(modelsDir, "encoder.onnx")
+                val decFile = File(modelsDir, "decoder.onnx")
+                val joinFile = File(modelsDir, "joiner.onnx")
+                val tokFile = File(modelsDir, "tokens.txt")
+                val llmFile = File(modelsDir, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+                val ruTts = File(modelsDir, "ru_RU-irina-medium.onnx")
+                val ruJson = File(modelsDir, "ru_RU-irina-medium.onnx.json")
+                val deTts = File(modelsDir, "de_DE-thorsten-high.onnx")
+                val deJson = File(modelsDir, "de_DE-thorsten-high.onnx.json")
+                val espeakDir = File(modelsDir, "espeak-ng-data")
+
+                val missing = mutableListOf<String>()
+                if (!vadFile.exists() || vadFile.length() < 1000) missing.add("silero_vad.onnx")
+                if (!encFile.exists() || encFile.length() < 1000) missing.add("encoder.onnx")
+                if (!decFile.exists() || decFile.length() < 1000) missing.add("decoder.onnx")
+                if (!joinFile.exists() || joinFile.length() < 1000) missing.add("joiner.onnx")
+                if (!tokFile.exists() || tokFile.length() < 100) missing.add("tokens.txt")
+                if (!llmFile.exists() || llmFile.length() < 100000) missing.add("qwen2.5-1.5b-instruct-q4_k_m.gguf")
+                if (!ruTts.exists() || ruTts.length() < 1000) missing.add("ru_RU-irina-medium.onnx")
+                if (!ruJson.exists() || ruJson.length() < 100) missing.add("ru_RU-irina-medium.onnx.json")
+                if (!deTts.exists() || deTts.length() < 1000) missing.add("de_DE-thorsten-high.onnx")
+                if (!deJson.exists() || deJson.length() < 100) missing.add("de_DE-thorsten-high.onnx.json")
+                if (!espeakDir.exists() || !espeakDir.isDirectory || espeakDir.list().isNullOrEmpty()) missing.add("espeak-ng-data (папка)")
+
+                if (missing.isNotEmpty()) {
+                    AppLogger.log("ОШИБКА: отсутствуют или повреждены файлы: ${missing.joinToString(", ")}")
+                    launch(Dispatchers.Main) {
+                        _isEnginesReady.value = false
+                        onDone(false)
+                    }
+                    return@launch
+                }
+
+                val vadOk = NativeBridge.initVad(vadFile.absolutePath)
+                val asrOk = NativeBridge.initAsr(
+                    encFile.absolutePath,
+                    decFile.absolutePath,
+                    joinFile.absolutePath,
+                    tokFile.absolutePath
+                )
+                val llmOk = NativeBridge.initLlm(llmFile.absolutePath)
+                val ttsOk = NativeBridge.initTtsDual(
+                    ruTts.absolutePath,
+                    ruJson.absolutePath,
+                    deTts.absolutePath,
+                    deJson.absolutePath,
+                    espeakDir.absolutePath
+                )
+
+                val allOk = vadOk && asrOk && llmOk && ttsOk
+                AppLogger.log("Результат инициализации движков: $allOk (VAD=$vadOk, ASR=$asrOk, LLM=$llmOk, TTS=$ttsOk)")
+                launch(Dispatchers.Main) {
+                    _isEnginesReady.value = allOk
+                    onDone(allOk)
+                }
+            } catch (t: Throwable) {
+                AppLogger.log("Критическая ошибка при инициализации AI движков: ${t.message}")
+                launch(Dispatchers.Main) {
+                    _isEnginesReady.value = false
+                    onDone(false)
+                }
             }
         }
     }
