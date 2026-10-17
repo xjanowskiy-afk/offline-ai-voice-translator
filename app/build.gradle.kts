@@ -61,14 +61,14 @@ android {
                 )
             val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
                 ?: throw GradleException("KEYSTORE_PASSWORD env var is not set.")
-            val keyAlias = System.getenv("KEY_ALIAS")
+            val ksAlias = System.getenv("KEY_ALIAS")
                 ?: throw GradleException("KEY_ALIAS env var is not set.")
-            val keyPassword = System.getenv("KEY_PASSWORD")
+            val ksKeyPassword = System.getenv("KEY_PASSWORD")
                 ?: throw GradleException("KEY_PASSWORD env var is not set.")
             storeFile = file(keystorePath)
             storePassword = keystorePassword
-            keyAlias = keyAlias
-            keyPassword = keyPassword
+            keyAlias = ksAlias
+            keyPassword = ksKeyPassword
         }
     }
 
