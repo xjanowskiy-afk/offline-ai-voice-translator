@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class AudioTranslationMode {
     TABLE_SPEAKER,
     SOLO_PROMPTER,
+    @Deprecated("Не поддерживается: один AudioTrack не может выводить на два устройства одновременно")
     HYBRID_SPEAKER_AND_EARBUD,
     SPLIT_EARBUDS
 }
@@ -26,6 +27,9 @@ class AudioRoutingManager(
 
     private val _currentMode = MutableStateFlow(AudioTranslationMode.TABLE_SPEAKER)
     val currentMode = _currentMode.asStateFlow()
+
+    /** Вызывается при смене режима из UI (нужен пайплайну для setPreferredDevice). */
+    var onModeChanged: ((AudioTranslationMode) -> Unit)? = null
 
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
@@ -63,6 +67,30 @@ class AudioRoutingManager(
     fun setMode(mode: AudioTranslationMode) {
         _currentMode.value = mode
         applyRoutingForCurrentMode()
+        onModeChanged?.invoke(mode)
+    }
+
+    /**
+     * Устройство вывода для AudioTrack.setPreferredDevice() под выбранный режим.
+     * Возвращает null, если подходящего устройства нет — тогда трек использует
+     * системный маршрут по умолчанию.
+     */
+    fun resolveOutputDevice(mode: AudioTranslationMode): AudioDeviceInfo? {
+        return try {
+            val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            when (mode) {
+                AudioTranslationMode.TABLE_SPEAKER ->
+                    outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                AudioTranslationMode.SOLO_PROMPTER, AudioTranslationMode.SPLIT_EARBUDS ->
+                    outputs.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                    }
+                AudioTranslationMode.HYBRID_SPEAKER_AND_EARBUD -> null
+            }
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     fun routeToSpeaker() {

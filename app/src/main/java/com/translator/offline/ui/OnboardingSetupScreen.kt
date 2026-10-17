@@ -20,6 +20,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.launch
 import com.translator.offline.PermissionAndSystemHelper
 import com.translator.offline.downloader.ModelCategory
 import com.translator.offline.downloader.ModelSetupManager
@@ -27,14 +32,30 @@ import com.translator.offline.downloader.ModelSetupManager
 @Composable
 fun OnboardingSetupScreen(
     setupManager: ModelSetupManager,
+    initFailed: Boolean = false,
+    onRetryInit: () -> Unit = {},
     onSetupFinished: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val progress by setupManager.progressState.collectAsState()
 
     var hasAudio by remember { mutableStateOf(PermissionAndSystemHelper.hasRecordAudioPermission(context)) }
     var hasNotif by remember { mutableStateOf(PermissionAndSystemHelper.hasNotificationPermission(context)) }
     var hasBattery by remember { mutableStateOf(PermissionAndSystemHelper.isIgnoringBatteryOptimizations(context)) }
+
+    // Настоящие системные запросы разрешений (аудит #7): раньше кнопки
+    // просто выставляли флаги, и скачивание 1.6 ГБ стартовало без прав.
+    val audioLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasAudio = granted
+    }
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotif = granted
+    }
 
     val allPermsGranted = hasAudio && hasNotif && hasBattery
 
@@ -95,7 +116,7 @@ fun OnboardingSetupScreen(
                     icon = Icons.Default.Mic,
                     isGranted = hasAudio
                 ) {
-                    hasAudio = true
+                    audioLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 PermissionSetupCard(
@@ -104,7 +125,9 @@ fun OnboardingSetupScreen(
                     icon = Icons.Default.Notifications,
                     isGranted = hasNotif
                 ) {
-                    hasNotif = true
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 PermissionSetupCard(
@@ -175,6 +198,31 @@ fun OnboardingSetupScreen(
                 if (progress.error != null) {
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(progress.error ?: "", color = Color(0xFFEF4444), fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                setupManager.startDownloadPipeline {
+                                    onSetupFinished()
+                                }
+                            }
+                        }
+                    ) {
+                        Text("Повторить загрузку", fontSize = 12.sp)
+                    }
+                }
+
+                if (initFailed) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "Не удалось инициализировать нейросети. Откройте логи для деталей.",
+                        color = Color(0xFFEF4444),
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(onClick = onRetryInit) {
+                        Text("Повторить инициализацию", fontSize = 12.sp)
+                    }
                 }
             }
         }

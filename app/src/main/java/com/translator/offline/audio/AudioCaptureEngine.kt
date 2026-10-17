@@ -120,6 +120,9 @@ class AudioCaptureEngine(
             com.translator.offline.ui.AppLogger.log("AudioRecord успешно запущен: 16kHz MONO (AudioSource=${record.audioSource})")
         } catch (e: Exception) {
             com.translator.offline.ui.AppLogger.log("Ошибка startRecording: ${e.message}")
+            // Освобождаем нативный ресурс, иначе утечка AudioRecord (аудит #10)
+            record.release()
+            audioRecord = null
             return
         }
 

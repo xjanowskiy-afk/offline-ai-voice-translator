@@ -17,7 +17,8 @@ import java.io.File
 data class MessageLog(
     val sourceText: String,
     val translatedText: String,
-    val isUser: Boolean
+    val isUser: Boolean,
+    val generationId: Long = -1L
 )
 
 class TranslatorViewModel(application: Application) : AndroidViewModel(application) {
@@ -45,6 +46,9 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _swapLeftRight = MutableStateFlow(false)
     val swapLeftRight = _swapLeftRight.asStateFlow()
+
+    // Id активной генерации: токены устаревших генераций игнорируются (аудит #4)
+    private var activeGenerationId: Long = -1L
 
     var onToggleRecordingCallback: ((Boolean) -> Unit)? = null
 
@@ -157,15 +161,18 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         AppLogger.log("Смена L/R каналов наушников: ${_swapLeftRight.value}")
     }
 
-    fun onNewSourceRecognized(text: String) {
+    fun onNewSourceRecognized(text: String, generationId: Long) {
+        activeGenerationId = generationId
         _currentStreamingText.value = ""
         val list = _messages.value.toMutableList().apply {
-            add(MessageLog(sourceText = text, translatedText = "", isUser = true))
+            add(MessageLog(sourceText = text, translatedText = "", isUser = true, generationId = generationId))
         }
         _messages.value = list
     }
 
-    fun onTranslationToken(token: String, isFinished: Boolean) {
+    fun onTranslationToken(token: String, isFinished: Boolean, generationId: Long) {
+        // Игнорируем токены устаревших генераций — защита от гонок
+        if (generationId != activeGenerationId) return
         if (isFinished) {
             _currentStreamingText.value = ""
         } else {
@@ -173,9 +180,23 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             val list = _messages.value.toMutableList()
             if (list.isNotEmpty()) {
                 val last = list.last()
-                list[list.lastIndex] = last.copy(translatedText = last.translatedText + token)
-                _messages.value = list
+                // Токен дописываем только в сообщение своей генерации
+                if (last.generationId == generationId) {
+                    list[list.lastIndex] = last.copy(translatedText = last.translatedText + token)
+                    _messages.value = list
+                }
             }
         }
+    }
+
+    /**
+     * Вызывается при уничтожении сервиса: нативные движки выгружены,
+     * перед следующим использованием нужен повторный initEngines().
+     */
+    fun markEnginesReleased() {
+        _isEnginesReady.value = false
+        _currentStreamingText.value = ""
+        activeGenerationId = -1L
+        AppLogger.log("Сервис остановлен: движки помечены как выгруженные")
     }
 }

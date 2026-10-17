@@ -13,6 +13,7 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
@@ -51,6 +52,7 @@ class ModelSetupManager(private val context: Context) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.MINUTES)
         .followRedirects(true)
         .build()
 
@@ -136,6 +138,54 @@ class ModelSetupManager(private val context: Context) {
         checkExistingCompletedCategories()
     }
 
+    /**
+     * SHA-256 контрольные суммы файлов моделей (проверка целостности после скачивания).
+     * Как заполнить: скачайте файл и выполните `sha256sum <файл>` (Linux/macOS)
+     * или `Get-FileHash <файл> -Algorithm SHA256` (PowerShell), затем вставьте
+     * hex-строку вместо плейсхолдера. Пока значение — "TODO: <sha256>",
+     * проверка для этого файла пропускается (с пометкой в логе).
+     */
+    private val expectedSha256: Map<String, String> = mapOf(
+        "silero_vad.onnx" to "TODO: <sha256>",
+        "encoder.onnx" to "TODO: <sha256>",
+        "decoder.onnx" to "TODO: <sha256>",
+        "joiner.onnx" to "TODO: <sha256>",
+        "tokens.txt" to "TODO: <sha256>",
+        "qwen2.5-1.5b-instruct-q4_k_m.gguf" to "TODO: <sha256>",
+        "de_DE-thorsten-high.onnx" to "TODO: <sha256>",
+        "de_DE-thorsten-high.onnx.json" to "TODO: <sha256>",
+        "ru_RU-irina-medium.onnx" to "TODO: <sha256>",
+        "ru_RU-irina-medium.onnx.json" to "TODO: <sha256>",
+        "espeak-ng-data.tar.bz2" to "TODO: <sha256>"
+    )
+
+    private fun verifySha256(file: File, fileName: String): Boolean {
+        val expected = expectedSha256[fileName] ?: return true
+        if (expected.startsWith("TODO")) {
+            com.translator.offline.ui.AppLogger.log("SHA-256 для $fileName не задан — проверка пропущена")
+            return true
+        }
+        return try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).use { fis ->
+                val buf = ByteArray(1024 * 1024)
+                var r: Int
+                while (fis.read(buf).also { r = it } != -1) {
+                    digest.update(buf, 0, r)
+                }
+            }
+            val actual = digest.digest().joinToString("") { "%02x".format(it) }
+            val ok = actual.equals(expected, ignoreCase = true)
+            com.translator.offline.ui.AppLogger.log(
+                if (ok) "SHA-256 OK: $fileName" else "SHA-256 НЕ СОВПАЛ: $fileName"
+            )
+            ok
+        } catch (e: Exception) {
+            com.translator.offline.ui.AppLogger.log("Ошибка проверки SHA-256 $fileName: ${e.message}")
+            false
+        }
+    }
+
     private fun checkExistingCompletedCategories() {
         val completed = mutableSetOf<ModelCategory>()
         for (cat in ModelCategory.values()) {
@@ -173,6 +223,9 @@ class ModelSetupManager(private val context: Context) {
     suspend fun startDownloadPipeline(onComplete: () -> Unit) = withContext(Dispatchers.IO) {
         val totalBytesTarget = tasks.sumOf { it.minExpectedBytes }
         var bytesDownloadedPre = 0L
+
+        // Сбрасываем старую ошибку при повторном запуске (кнопка «Повторить»)
+        _progressState.value = _progressState.value.copy(error = null)
 
         tasks.forEachIndexed { index, task ->
             val targetFile = File(modelsDir, task.fileName)
@@ -245,6 +298,7 @@ class ModelSetupManager(private val context: Context) {
                     _progressState.value = _progressState.value.copy(
                         error = "Сбой сети [HTTP ${response.code}] при загрузке ${task.fileName}"
                     )
+                    response.close()
                     return@withContext
                 }
 
@@ -255,6 +309,8 @@ class ModelSetupManager(private val context: Context) {
                 val output = FileOutputStream(targetFile, append)
 
                 val buffer = ByteArray(64 * 1024)
+                // Троттлинг обновлений UI: не чаще 5 раз в секунду (аудит #10)
+                var lastProgressEmitMs = 0L
                 body?.byteStream()?.use { input ->
                     output.use { out ->
                         var read: Int
@@ -272,23 +328,49 @@ class ModelSetupManager(private val context: Context) {
                                 speedBytes = 0L
                             }
 
-                            val totalDone = bytesDownloadedPre + currentFileDownloaded
-                            val totalPercent = ((totalDone.toDouble() / totalBytesTarget) * 100).toInt().coerceIn(0, 100)
-                            val filePercent = ((currentFileDownloaded.toDouble() / task.minExpectedBytes) * 100).toInt().coerceIn(0, 100)
+                            if (now - lastProgressEmitMs >= 200) {
+                                lastProgressEmitMs = now
+                                val totalDone = bytesDownloadedPre + currentFileDownloaded
+                                val totalPercent = ((totalDone.toDouble() / totalBytesTarget) * 100).toInt().coerceIn(0, 100)
+                                val filePercent = ((currentFileDownloaded.toDouble() / task.minExpectedBytes) * 100).toInt().coerceIn(0, 100)
 
-                            _progressState.value = _progressState.value.copy(
-                                overallProgressPercent = totalPercent,
-                                currentFileProgressPercent = filePercent,
-                                downloadSpeedMbPerSec = speed,
-                                downloadedBytesTotal = totalDone,
-                                totalBytesExpected = totalBytesTarget
-                            )
+                                _progressState.value = _progressState.value.copy(
+                                    overallProgressPercent = totalPercent,
+                                    currentFileProgressPercent = filePercent,
+                                    downloadSpeedMbPerSec = speed,
+                                    downloadedBytesTotal = totalDone,
+                                    totalBytesExpected = totalBytesTarget
+                                )
+                            }
                         }
                         out.flush()
                     }
                 }
+                // Закрываем ответ, чтобы соединение вернулось в пул
+                response.close()
+
+                // Финальное обновление прогресса после завершения файла
+                run {
+                    val totalDone = bytesDownloadedPre + targetFile.length()
+                    val totalPercent = ((totalDone.toDouble() / totalBytesTarget) * 100).toInt().coerceIn(0, 100)
+                    _progressState.value = _progressState.value.copy(
+                        overallProgressPercent = totalPercent,
+                        currentFileProgressPercent = 100,
+                        downloadedBytesTotal = totalDone,
+                        totalBytesExpected = totalBytesTarget
+                    )
+                }
 
                 bytesDownloadedPre += targetFile.length()
+
+                // Проверка целостности скачанного файла (SHA-256 из expectedSha256)
+                if (!verifySha256(targetFile, task.fileName)) {
+                    targetFile.delete()
+                    _progressState.value = _progressState.value.copy(
+                        error = "SHA-256 не совпал для ${task.fileName} — файл удалён, нажмите «Повторить»"
+                    )
+                    return@withContext
+                }
 
                 if (task.isArchive) {
                     _progressState.value = _progressState.value.copy(isUnpacking = true)
@@ -326,6 +408,15 @@ class ModelSetupManager(private val context: Context) {
     }
 
     private fun unpackArchive(archiveFile: File, type: String) {
+        // Защита от Zip Slip: запись не должна выходить за пределы modelsDir (аудит #10)
+        fun resolveDestFile(entryName: String): File {
+            val dest = File(modelsDir, entryName)
+            val canonicalBase = modelsDir.canonicalPath + File.separator
+            if (!dest.canonicalPath.startsWith(canonicalBase)) {
+                throw SecurityException("Zip Slip: запись выходит за modelsDir: $entryName")
+            }
+            return dest
+        }
         when (type) {
             "tar.bz2" -> {
                 FileInputStream(archiveFile).use { fis ->
@@ -334,7 +425,7 @@ class ModelSetupManager(private val context: Context) {
                             TarArchiveInputStream(bzIn).use { tarIn ->
                                 var entry = tarIn.nextTarEntry
                                 while (entry != null) {
-                                    val dest = File(modelsDir, entry.name)
+                                    val dest = resolveDestFile(entry.name)
                                     if (entry.isDirectory) {
                                         dest.mkdirs()
                                     } else {
@@ -354,7 +445,7 @@ class ModelSetupManager(private val context: Context) {
                 ZipInputStream(FileInputStream(archiveFile)).use { zis ->
                     var entry = zis.nextEntry
                     while (entry != null) {
-                        val dest = File(modelsDir, entry.name)
+                        val dest = resolveDestFile(entry.name)
                         if (entry.isDirectory) {
                             dest.mkdirs()
                         } else {

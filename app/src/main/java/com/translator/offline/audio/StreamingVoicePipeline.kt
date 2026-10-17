@@ -1,6 +1,7 @@
 package com.translator.offline.audio
 
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioTrack
 import com.translator.offline.nlp.TextNormalizer
@@ -13,12 +14,19 @@ enum class EarChannel {
     RIGHT_ONLY
 }
 
+private data class TtsChunk(
+    val text: String,
+    val channel: EarChannel,
+    val isGerman: Boolean
+)
+
 class StreamingVoicePipeline(
     private val sampleRate: Int = 22050,
     private val ttsSynthesizeFn: (text: String, isTargetGerman: Boolean) -> FloatArray,
-    private val onSpeakingStateChanged: (isSpeaking: Boolean) -> Unit
+    private val onSpeakingStateChanged: (isSpeaking: Boolean) -> Unit,
+    private val preferredDeviceProvider: (AudioTranslationMode) -> AudioDeviceInfo? = { null }
 ) {
-    private val textChunksChannel = Channel<Pair<String, EarChannel>>(Channel.UNLIMITED)
+    private val textChunksChannel = Channel<TtsChunk>(Channel.UNLIMITED)
     private val audioStereoChannel = Channel<FloatArray>(Channel.BUFFERED)
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -30,9 +38,9 @@ class StreamingVoicePipeline(
     var swapLeftRight: Boolean = false
 
     @Volatile
-    var isTargetGerman: Boolean = true
+    private var audioMode: AudioTranslationMode = AudioTranslationMode.TABLE_SPEAKER
 
-    private val audioTrack: AudioTrack by lazy {
+    private val audioTrackLazy = lazy {
         val minBufSize = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_STEREO,
@@ -55,25 +63,46 @@ class StreamingVoicePipeline(
             .setBufferSizeInBytes(minBufSize * 2)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build().apply { play() }
+            .also { applyPreferredDevice(it) }
+    }
+    private val audioTrack: AudioTrack by audioTrackLazy
+
+    /**
+     * Переключает устройство вывода TTS под выбранный режим.
+     * TABLE_SPEAKER -> встроенный динамик, SOLO_PROMPTER/SPLIT_EARBUDS -> Bluetooth.
+     * null от провайдера сбрасывает предпочтение (маршрут по умолчанию системы).
+     */
+    fun setAudioMode(mode: AudioTranslationMode) {
+        audioMode = mode
+        if (audioTrackLazy.isInitialized()) {
+            applyPreferredDevice(audioTrack)
+        }
+    }
+
+    private fun applyPreferredDevice(track: AudioTrack) {
+        try {
+            track.setPreferredDevice(preferredDeviceProvider(audioMode))
+        } catch (_: Exception) {
+        }
     }
 
     init {
         scope.launch(Dispatchers.Default) {
-            for ((rawChunk, requestedChannel) in textChunksChannel) {
-                if (rawChunk.isNotBlank()) {
-                    val lang = if (isTargetGerman) "de" else "ru"
-                    val normalized = TextNormalizer.normalize(rawChunk, lang)
+            for (chunk in textChunksChannel) {
+                if (chunk.text.isNotBlank()) {
+                    val lang = if (chunk.isGerman) "de" else "ru"
+                    val normalized = TextNormalizer.normalize(chunk.text, lang)
                     if (normalized.isNotBlank()) {
-                        val monoPcm = ttsSynthesizeFn(normalized, isTargetGerman)
+                        val monoPcm = ttsSynthesizeFn(normalized, chunk.isGerman)
                         if (monoPcm.isNotEmpty()) {
                             val resolvedChannel = if (swapLeftRight) {
-                                when (requestedChannel) {
+                                when (chunk.channel) {
                                     EarChannel.LEFT_ONLY -> EarChannel.RIGHT_ONLY
                                     EarChannel.RIGHT_ONLY -> EarChannel.LEFT_ONLY
                                     EarChannel.BOTH -> EarChannel.BOTH
                                 }
                             } else {
-                                requestedChannel
+                                chunk.channel
                             }
 
                             val stereoPcm = convertMonoToStereoPanned(monoPcm, resolvedChannel)
@@ -128,26 +157,44 @@ class StreamingVoicePipeline(
         return stereo
     }
 
-    private val currentSentenceBuffer = StringBuilder()
+    // Буферы незавершённых предложений по id генерации: токены разных
+    // генераций никогда не смешиваются, даже при параллельных вызовах.
+    private val sentenceBuffers = mutableMapOf<Long, StringBuilder>()
+    private val buffersLock = Any()
 
-    fun onNewTranslatedToken(token: String, isEndOfGeneration: Boolean, targetChannel: EarChannel) {
-        currentSentenceBuffer.append(token)
-        val text = currentSentenceBuffer.toString()
-        val trimmed = text.trim()
-        val wordCount = if (trimmed.isEmpty()) 0 else trimmed.split(Regex("\\s+")).size
+    fun onNewTranslatedToken(
+        token: String,
+        isEndOfGeneration: Boolean,
+        targetChannel: EarChannel,
+        isGerman: Boolean,
+        generationId: Long
+    ) {
+        val readyChunk: TtsChunk? = synchronized(buffersLock) {
+            val buffer = sentenceBuffers.getOrPut(generationId) { StringBuilder() }
+            buffer.append(token)
+            val text = buffer.toString()
+            val trimmed = text.trim()
+            val wordCount = if (trimmed.isEmpty()) 0 else trimmed.split(Regex("\\s+")).size
 
-        val hasPunctuationBreak = text.endsWith(",") ||
-                text.endsWith(".") ||
-                text.endsWith("!") ||
-                text.endsWith("?") ||
-                text.endsWith(":") ||
-                text.endsWith(";") ||
-                text.endsWith(" - ")
+            val hasPunctuationBreak = text.endsWith(",") ||
+                    text.endsWith(".") ||
+                    text.endsWith("!") ||
+                    text.endsWith("?") ||
+                    text.endsWith(":") ||
+                    text.endsWith(";") ||
+                    text.endsWith(" - ")
 
-        if ((hasPunctuationBreak && wordCount >= 3) || (isEndOfGeneration && trimmed.isNotEmpty())) {
-            val readyChunk = trimmed
-            currentSentenceBuffer.clear()
-            textChunksChannel.trySend(Pair(readyChunk, targetChannel))
+            if (isEndOfGeneration) {
+                sentenceBuffers.remove(generationId)
+            }
+            if ((hasPunctuationBreak && wordCount >= 3) || (isEndOfGeneration && trimmed.isNotEmpty())) {
+                TtsChunk(trimmed, targetChannel, isGerman)
+            } else {
+                null
+            }
+        }
+        if (readyChunk != null) {
+            textChunksChannel.trySend(readyChunk)
         }
     }
 

@@ -90,16 +90,6 @@ fun AudioModeSelectorSheet(
             Spacer(modifier = Modifier.height(8.dp))
 
             ModeOptionCard(
-                title = "Динамик + Наушник (Как в Google Translate)",
-                desc = "Мне в наушник, собеседнику громко в динамик",
-                icon = Icons.Default.RecordVoiceOver,
-                isSelected = currentMode == AudioTranslationMode.HYBRID_SPEAKER_AND_EARBUD,
-                onClick = { routingManager.setMode(AudioTranslationMode.HYBRID_SPEAKER_AND_EARBUD) }
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            ModeOptionCard(
                 title = "Раздельные наушники (Split-Earbud L/R)",
                 desc = "Левый канал = RU (мне), Правый канал = DE (собеседнику)",
                 icon = Icons.Default.CallSplit,

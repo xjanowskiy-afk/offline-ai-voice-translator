@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,28 +24,56 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.text.SimpleDateFormat
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.*
 
 object AppLogger {
+    private const val MAX_ENTRIES = 2000
+
+    private val lock = Any()
+    private val buffer = ArrayDeque<String>()
+
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs = _logs.asStateFlow()
 
-    private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val timeFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.US)
 
+    /**
+     * Потокобезопасная запись: SimpleDateFormat заменён на immutable
+     * DateTimeFormatter, записи хранятся в ограниченном ring-buffer.
+     */
     fun log(message: String) {
-        val entry = "[${timeFormat.format(Date())}] $message"
-        _logs.value = _logs.value + entry
+        val entry = "[${timeFormat.format(LocalTime.now())}] $message"
+        synchronized(lock) {
+            buffer.addLast(entry)
+            while (buffer.size > MAX_ENTRIES) {
+                buffer.removeFirst()
+            }
+            _logs.value = buffer.toList()
+        }
     }
 
     fun getAllLogsText(): String {
-        return _logs.value.joinToString("\n")
+        return synchronized(lock) {
+            buffer.joinToString("\n")
+        }
+    }
+
+    fun clear() {
+        synchronized(lock) {
+            buffer.clear()
+            _logs.value = emptyList()
+        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DebugConsoleSheet(onDismiss: () -> Unit) {
+fun DebugConsoleSheet(
+    onDismiss: () -> Unit,
+    onStopService: () -> Unit = {}
+) {
     val logs by AppLogger.logs.collectAsState()
     val context = LocalContext.current
 
@@ -79,26 +108,46 @@ fun DebugConsoleSheet(onDismiss: () -> Unit) {
                     )
                 }
 
-                Button(
-                    onClick = {
-                        val text = AppLogger.getAllLogsText()
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val clip = ClipData.newPlainText("Translator Logs", text)
-                        clipboard.setPrimaryClip(clip)
-                        Toast.makeText(context, "Логи скопированы в буфер обмена!", Toast.LENGTH_SHORT).show()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Icon(
-                        Icons.Default.ContentCopy,
-                        contentDescription = "Копировать",
-                        modifier = Modifier.size(16.dp),
-                        tint = Color.White
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Скопировать все", fontSize = 12.sp, color = Color.White)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            val text = AppLogger.getAllLogsText()
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = ClipData.newPlainText("Translator Logs", text)
+                            clipboard.setPrimaryClip(clip)
+                            Toast.makeText(context, "Логи скопированы в буфер обмена!", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.ContentCopy,
+                            contentDescription = "Копировать",
+                            modifier = Modifier.size(16.dp),
+                            tint = Color.White
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Скопировать все", fontSize = 12.sp, color = Color.White)
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Button(
+                        onClick = onStopService,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Stop,
+                            contentDescription = "Остановить сервис",
+                            modifier = Modifier.size(16.dp),
+                            tint = Color.White
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Стоп", fontSize = 12.sp, color = Color.White)
+                    }
                 }
             }
 

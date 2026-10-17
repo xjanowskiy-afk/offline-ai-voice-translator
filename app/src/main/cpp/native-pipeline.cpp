@@ -14,6 +14,11 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+// LLM context size and generation budget. initLlm() uses LLM_N_CTX; translateStreaming()
+// clamps the prompt so that prompt_tokens + LLM_MAX_NEW_TOKENS <= LLM_N_CTX.
+static constexpr int LLM_N_CTX = 1024;
+static constexpr int LLM_MAX_NEW_TOKENS = 256;
+
 struct PipelineEngine {
     SherpaOnnxVoiceActivityDetector* vad = nullptr;
     const SherpaOnnxOnlineRecognizer* asr = nullptr;
@@ -25,13 +30,34 @@ struct PipelineEngine {
     llama_model* llmModel = nullptr;
     llama_context* llmCtx = nullptr;
 
-    std::mutex mtx;
+    // Per-engine mutexes with a STRICT lock order: mtx_vad < mtx_asr < mtx_llm < mtx_tts.
+    // Rules:
+    //  - Per-call functions lock ONLY the engine they touch, so the mic capture path
+    //    (processVadChunk / feedAudioToAsr) NEVER blocks on LLM generation, and TTS
+    //    synthesis never blocks on generation either (full-duplex stays possible).
+    //  - Functions that touch everything (releaseAll) acquire all four in ascending
+    //    order. No other function holds more than one engine mutex at a time.
+    //  - The onToken upcall inside translateStreaming runs with mtx_llm held; the Java
+    //    callback must NEVER call back into NativeBridge (would deadlock on mtx_llm).
+    std::mutex mtx_vad;
+    std::mutex mtx_asr;
+    std::mutex mtx_llm;
+    std::mutex mtx_tts;
 };
 
 static PipelineEngine g_pipeline;
 
 static jstring toJString(JNIEnv* env, const std::string& str) {
     return env->NewStringUTF(str.c_str());
+}
+
+// Verifies that the direct buffer really holds at least `sampleCount` floats.
+// Protects against buffer over-read if the Java side ever passes a stale buffer.
+static bool checkDirectBufferCapacity(JNIEnv* env, jobject directBuffer, jint sampleCount) {
+    if (sampleCount < 0) return false;
+    const jlong capacityBytes = env->GetDirectBufferCapacity(directBuffer);
+    if (capacityBytes < 0) return false;
+    return capacityBytes >= static_cast<jlong>(sampleCount) * static_cast<jlong>(sizeof(float));
 }
 
 extern "C" {
@@ -42,7 +68,7 @@ Java_com_translator_offline_NativeBridge_initVad(
     jobject,
     jstring vadModelPath
 ) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_vad);
     const char* path = env->GetStringUTFChars(vadModelPath, nullptr);
 
     SherpaOnnxVadModelConfig config;
@@ -76,11 +102,12 @@ Java_com_translator_offline_NativeBridge_processVadChunk(
     jobject directBuffer,
     jint sampleCount
 ) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_vad);
     if (!g_pipeline.vad) return JNI_FALSE;
 
     auto* samples = static_cast<const float*>(env->GetDirectBufferAddress(directBuffer));
     if (!samples) return JNI_FALSE;
+    if (!checkDirectBufferCapacity(env, directBuffer, sampleCount)) return JNI_FALSE;
 
     SherpaOnnxVoiceActivityDetectorAcceptWaveform(g_pipeline.vad, samples, sampleCount);
     return SherpaOnnxVoiceActivityDetectorDetected(g_pipeline.vad) ? JNI_TRUE : JNI_FALSE;
@@ -88,7 +115,7 @@ Java_com_translator_offline_NativeBridge_processVadChunk(
 
 JNIEXPORT void JNICALL
 Java_com_translator_offline_NativeBridge_resetVad(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_vad);
     if (g_pipeline.vad) {
         SherpaOnnxVoiceActivityDetectorClear(g_pipeline.vad);
     }
@@ -103,7 +130,7 @@ Java_com_translator_offline_NativeBridge_initAsr(
     jstring joinerPath,
     jstring tokensPath
 ) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_asr);
 
     const char* enc = env->GetStringUTFChars(encoderPath, nullptr);
     const char* dec = env->GetStringUTFChars(decoderPath, nullptr);
@@ -159,11 +186,12 @@ Java_com_translator_offline_NativeBridge_feedAudioToAsr(
     jobject directBuffer,
     jint sampleCount
 ) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_asr);
     if (!g_pipeline.asr || !g_pipeline.asrStream) return;
 
     auto* samples = static_cast<const float*>(env->GetDirectBufferAddress(directBuffer));
     if (!samples) return;
+    if (!checkDirectBufferCapacity(env, directBuffer, sampleCount)) return;
 
     SherpaOnnxOnlineStreamAcceptWaveform(g_pipeline.asrStream, 16000, samples, sampleCount);
     while (SherpaOnnxIsOnlineStreamReady(g_pipeline.asr, g_pipeline.asrStream)) {
@@ -173,7 +201,7 @@ Java_com_translator_offline_NativeBridge_feedAudioToAsr(
 
 JNIEXPORT jstring JNICALL
 Java_com_translator_offline_NativeBridge_getAsrResult(JNIEnv* env, jobject) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_asr);
     if (!g_pipeline.asr || !g_pipeline.asrStream) return env->NewStringUTF("");
 
     const auto* result = SherpaOnnxGetOnlineStreamResult(g_pipeline.asr, g_pipeline.asrStream);
@@ -181,19 +209,20 @@ Java_com_translator_offline_NativeBridge_getAsrResult(JNIEnv* env, jobject) {
 
     jstring res = env->NewStringUTF(result->text);
     SherpaOnnxDestroyOnlineRecognizerResult(result);
+    // res is null only under OOM; the caller then receives null instead of crashing.
     return res;
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_translator_offline_NativeBridge_isAsrEndpoint(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_asr);
     if (!g_pipeline.asr || !g_pipeline.asrStream) return JNI_FALSE;
     return SherpaOnnxOnlineStreamIsEndpoint(g_pipeline.asr, g_pipeline.asrStream) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
 Java_com_translator_offline_NativeBridge_resetAsrStream(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_asr);
     if (g_pipeline.asr) {
         if (g_pipeline.asrStream) {
             SherpaOnnxDestroyOnlineStream(g_pipeline.asrStream);
@@ -208,7 +237,7 @@ Java_com_translator_offline_NativeBridge_initLlm(
     jobject,
     jstring modelPath
 ) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_llm);
     const char* path = env->GetStringUTFChars(modelPath, nullptr);
 
     llama_backend_init();
@@ -232,7 +261,7 @@ Java_com_translator_offline_NativeBridge_initLlm(
     if (!g_pipeline.llmModel) return JNI_FALSE;
 
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 1024;
+    ctx_params.n_ctx = LLM_N_CTX;
     ctx_params.n_threads = 4;
     ctx_params.n_threads_batch = 4;
     ctx_params.logits_all = false;
@@ -248,11 +277,36 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
     jstring promptStr,
     jobject callback
 ) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
-    if (!g_pipeline.llmCtx || !g_pipeline.llmModel) return;
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_llm);
 
     jclass callbackClass = env->GetObjectClass(callback);
-    jmethodID onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;Z)V");
+    jmethodID onTokenMethod = nullptr;
+    if (callbackClass) {
+        onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;Z)V");
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(callbackClass);
+    }
+
+    // Guarded terminal sender: the Kotlin side must ALWAYS receive one final
+    // onToken(..., isEndOfGeneration=true), whatever goes wrong, so it never
+    // hangs in the "translating" state. No-op when the callback is unusable.
+    bool terminalSent = false;
+    auto sendTerminal = [&]() {
+        if (terminalSent || !onTokenMethod) return;
+        terminalSent = true;
+        jstring emptyStr = env->NewStringUTF("");
+        if (emptyStr) {
+            env->CallVoidMethod(callback, onTokenMethod, emptyStr, JNI_TRUE);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            env->DeleteLocalRef(emptyStr);
+        }
+    };
+
+    if (!g_pipeline.llmCtx || !g_pipeline.llmModel) {
+        sendTerminal();  // never initialized — still release the UI from "translating"
+        return;
+    }
+    if (!onTokenMethod) return;
 
     const char* pCStr = env->GetStringUTFChars(promptStr, nullptr);
     std::string prompt(pCStr);
@@ -261,32 +315,58 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
     std::vector<llama_token> tokens_list(prompt.length() + 128);
     int n_tokens = llama_tokenize(
         g_pipeline.llmModel, prompt.c_str(), prompt.length(),
-        tokens_list.data(), tokens_list.size(), true, false
+        tokens_list.data(), static_cast<int32_t>(tokens_list.size()), true, false
     );
     if (n_tokens < 0) {
-        tokens_list.resize(-n_tokens);
+        tokens_list.resize(static_cast<size_t>(-n_tokens));
         n_tokens = llama_tokenize(
             g_pipeline.llmModel, prompt.c_str(), prompt.length(),
-            tokens_list.data(), tokens_list.size(), true, false
+            tokens_list.data(), static_cast<int32_t>(tokens_list.size()), true, false
         );
     }
-    tokens_list.resize(n_tokens);
+    if (n_tokens <= 0) {
+        sendTerminal();  // empty/failed tokenization — nothing to generate
+        return;
+    }
+    tokens_list.resize(static_cast<size_t>(n_tokens));
+
+    // Clamp the prompt from the FRONT so prompt_tokens + max_new_tokens <= n_ctx.
+    // (Front truncation keeps the most recent instructions, which matter most.)
+    if (n_tokens + LLM_MAX_NEW_TOKENS > LLM_N_CTX) {
+        const int keep = LLM_N_CTX - LLM_MAX_NEW_TOKENS;
+        if (keep <= 0) {
+            sendTerminal();
+            return;
+        }
+        tokens_list.erase(tokens_list.begin(),
+                          tokens_list.begin() + (n_tokens - keep));
+        n_tokens = keep;
+    }
 
     llama_kv_cache_clear(g_pipeline.llmCtx);
 
-    llama_batch batch = llama_batch_init(2048, 0, 1);
+    // Batch capacity is n_ctx — total tokens can never exceed the context.
+    llama_batch batch = llama_batch_init(LLM_N_CTX, 0, 1);
+    if (!batch.token || !batch.pos || !batch.logits) {
+        llama_batch_free(batch);
+        sendTerminal();
+        return;
+    }
     for (size_t i = 0; i < tokens_list.size(); i++) {
         batch.token[i] = tokens_list[i];
-        batch.pos[i] = i;
+        batch.pos[i] = static_cast<llama_pos>(i);
         batch.n_seq_id[i] = 1;
         batch.seq_id[i][0] = 0;
         batch.logits[i] = false;
     }
-    batch.n_tokens = tokens_list.size();
-    batch.logits[batch.n_tokens - 1] = true;
+    batch.n_tokens = n_tokens;
+    if (batch.n_tokens > 0) {
+        batch.logits[batch.n_tokens - 1] = true;
+    }
 
     if (llama_decode(g_pipeline.llmCtx, batch) != 0) {
         llama_batch_free(batch);
+        sendTerminal();  // decode error — terminal so the UI does not hang
         return;
     }
 
@@ -295,7 +375,7 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.1f));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(42));
 
-    const int max_tokens = 256;
+    const int max_tokens = LLM_MAX_NEW_TOKENS;
     int n_cur = batch.n_tokens;
     int n_decode = 0;
 
@@ -304,9 +384,7 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
         llama_sampler_accept(smpl, new_token_id);
 
         if (llama_token_is_eog(g_pipeline.llmModel, new_token_id)) {
-            jstring emptyStr = env->NewStringUTF("");
-            env->CallVoidMethod(callback, onTokenMethod, emptyStr, JNI_TRUE);
-            env->DeleteLocalRef(emptyStr);
+            sendTerminal();
             break;
         }
 
@@ -315,8 +393,15 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
         if (n > 0) {
             std::string piece(buf, n);
             jstring jPiece = toJString(env, piece);
+            if (!jPiece) break;  // OOM — stop generation, terminal below
             env->CallVoidMethod(callback, onTokenMethod, jPiece, JNI_FALSE);
             env->DeleteLocalRef(jPiece);
+            if (env->ExceptionCheck()) {
+                // The Java callback threw: clear it and stop generation cleanly
+                // instead of continuing with UB on subsequent JNI calls.
+                env->ExceptionClear();
+                break;
+            }
         }
 
         batch.n_tokens = 1;
@@ -335,6 +420,7 @@ Java_com_translator_offline_NativeBridge_translateStreaming(
     llama_sampler_free(smpl);
     llama_batch_free(batch);
     llama_kv_cache_clear(g_pipeline.llmCtx);
+    sendTerminal();  // guaranteed exactly once: normal end, EOG, decode error, OOM, callback exception
 }
 
 JNIEXPORT jboolean JNICALL
@@ -347,7 +433,7 @@ Java_com_translator_offline_NativeBridge_initTtsDual(
     jstring deTokensPath,
     jstring dataDir
 ) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_tts);
 
     const char* ruModel = env->GetStringUTFChars(ruModelPath, nullptr);
     const char* ruTok = env->GetStringUTFChars(ruTokensPath, nullptr);
@@ -400,7 +486,7 @@ Java_com_translator_offline_NativeBridge_synthesizeSpeechChunkByLang(
     jboolean isGerman,
     jint speakerId
 ) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    std::lock_guard<std::mutex> lock(g_pipeline.mtx_tts);
     SherpaOnnxOfflineTts* activeTts = isGerman ? g_pipeline.ttsDe : g_pipeline.ttsRu;
     if (!activeTts) return env->NewFloatArray(0);
 
@@ -421,13 +507,21 @@ Java_com_translator_offline_NativeBridge_synthesizeSpeechChunkByLang(
     SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
 
     jfloatArray result = env->NewFloatArray(totalSamples);
+    if (!result) return nullptr;  // OOM — report null instead of SetFloatArrayRegion(NULL)
     env->SetFloatArrayRegion(result, 0, totalSamples, pcmWithSilence.data());
     return result;
 }
 
 JNIEXPORT void JNICALL
 Java_com_translator_offline_NativeBridge_releaseAll(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(g_pipeline.mtx);
+    // Acquire ALL engine mutexes in the strict ascending lock order
+    // (vad < asr < llm < tts) so no deadlock is possible with any caller.
+    // NOTE: this blocks until in-flight generation/capture/TTS finish. Callers
+    // should invoke releaseAll off the main thread to avoid ANR (Kotlin side).
+    std::unique_lock<std::mutex> lockVad(g_pipeline.mtx_vad);
+    std::unique_lock<std::mutex> lockAsr(g_pipeline.mtx_asr);
+    std::unique_lock<std::mutex> lockLlm(g_pipeline.mtx_llm);
+    std::unique_lock<std::mutex> lockTts(g_pipeline.mtx_tts);
 
     if (g_pipeline.vad) {
         SherpaOnnxDestroyVoiceActivityDetector(g_pipeline.vad);

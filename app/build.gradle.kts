@@ -11,8 +11,8 @@ android {
         applicationId = "com.translator.offline"
         minSdk = 29
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 5
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -49,12 +49,26 @@ android {
         }
     }
 
+    // Release signing: keystore and credentials come from environment variables.
+    // The keystore file itself must NEVER be committed to the repo (see .gitignore).
+    // In CI it is restored from the KEYSTORE_BASE64 GitHub secret into $RUNNER_TEMP.
     signingConfigs {
         create("release") {
-            storeFile = file("release-key.jks")
-            storePassword = "translator123"
-            keyAlias = "translator"
-            keyPassword = "translator123"
+            val keystorePath = System.getenv("KEYSTORE_PATH")
+                ?: throw GradleException(
+                    "KEYSTORE_PATH env var is not set. Set it to the path of your release keystore (.jks). " +
+                    "In CI this is provided automatically; locally see ROTATION_CHECKLIST.md."
+                )
+            val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
+                ?: throw GradleException("KEYSTORE_PASSWORD env var is not set.")
+            val keyAlias = System.getenv("KEY_ALIAS")
+                ?: throw GradleException("KEY_ALIAS env var is not set.")
+            val keyPassword = System.getenv("KEY_PASSWORD")
+                ?: throw GradleException("KEY_PASSWORD env var is not set.")
+            storeFile = file(keystorePath)
+            storePassword = keystorePassword
+            keyAlias = keyAlias
+            keyPassword = keyPassword
         }
     }
 

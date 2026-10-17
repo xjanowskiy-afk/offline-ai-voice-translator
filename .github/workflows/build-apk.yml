@@ -2,9 +2,7 @@ name: Build On-Device Voice Translator APK
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 permissions:
@@ -16,46 +14,79 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Gradle (with build cache)
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+
+      - name: Cache Android NDK
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk
+          key: android-ndk-26.1.10909125
+
       - name: Install NDK and CMake
         run: |
-          echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager "ndk;26.1.10909125" "cmake;3.22.1"
+          NDK_DIR="${ANDROID_HOME}/ndk/26.1.10909125"
+          if [ -d "$NDK_DIR" ]; then
+            echo "NDK already cached at $NDK_DIR"
+          else
+            echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
+            ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager "ndk;26.1.10909125" "cmake;3.22.1"
+          fi
+
+      - name: Read versionName from Gradle config
+        id: app_version
+        run: |
+          VERSION_NAME=$(grep -E 'versionName\s*=' app/build.gradle.kts | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$VERSION_NAME" ]; then
+            echo "::error::Could not parse versionName from app/build.gradle.kts"
+            exit 1
+          fi
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$VERSION_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Run Dependencies Setup Script
         run: |
           chmod +x ./setup_dependencies.sh
           ./setup_dependencies.sh
 
+      # TEMPORARY (until the owner rotates the compromised signing key, see ROTATION_CHECKLIST.md):
+      # uses the legacy in-repo keystore. After rotation, restore this step to decode
+      # the new keystore from the KEYSTORE_BASE64 secret instead.
+      - name: Use legacy in-repo keystore (TEMPORARY)
+        run: |
+          echo "KEYSTORE_PATH=${{ github.workspace }}/app/release-key.jks" >> "$GITHUB_ENV"
+          ls -la "${{ github.workspace }}/app/release-key.jks"
+
       - name: Build Signed Release APK with Gradle
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           chmod +x ./gradlew
           ./gradlew assembleRelease --stacktrace --no-daemon
 
       - name: Upload Output APK Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: voice-translator-arm64-signed-release
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 30
 
       - name: Create GitHub Release with APK
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: v1.0.0
-          name: "Offline Voice Translator v1.0.0 (Signed APK)"
+          tag_name: ${{ steps.app_version.outputs.release_tag }}
+          name: "Offline Voice Translator ${{ steps.app_version.outputs.release_tag }} (Signed APK)"
           body: "100% On-Device AI Voice Translator for Samsung Galaxy Z Fold 4 (SM-F936B, Snapdragon 8+ Gen 1, arm64-v8a). Digitally signed."
           files: app/build/outputs/apk/release/app-release.apk
         env:

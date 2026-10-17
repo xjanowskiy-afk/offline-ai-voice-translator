@@ -42,11 +42,18 @@ class MainActivity : ComponentActivity() {
                 service = s
                 isBound = true
 
-                s.onNewRecognition = { text ->
-                    viewModel.onNewSourceRecognized(text)
+                s.onNewRecognition = { text, genId ->
+                    viewModel.onNewSourceRecognized(text, genId)
                 }
-                s.onNewTranslationToken = { token, isEnd ->
-                    viewModel.onTranslationToken(token, isEnd)
+                s.onNewTranslationToken = { token, isEnd, genId ->
+                    viewModel.onTranslationToken(token, isEnd, genId)
+                }
+
+                // Если сервис был перезапущен после stop(), движки нужно инициализировать заново
+                if (!viewModel.isEnginesReady.value && setupManager.isAllModelsReady()) {
+                    viewModel.initEngines(setupManager.modelsDir) { success ->
+                        com.translator.offline.ui.AppLogger.log("Переинициализация AI после рестарта сервиса: $success")
+                    }
                 }
 
                 // Передаем живую амплитуду микрофона в ViewModel для красивого эквалайзера
@@ -66,6 +73,10 @@ class MainActivity : ComponentActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             amplitudeJob?.cancel()
             amplitudeJob = null
+            // Сбрасываем колбэки: сервис долгоживущий, иначе утечёт Activity/ViewModel (аудит #9)
+            service?.onNewRecognition = null
+            service?.onNewTranslationToken = null
+            viewModel.markEnginesReleased()
             service = null
             isBound = false
         }
@@ -103,6 +114,10 @@ class MainActivity : ComponentActivity() {
                     } else {
                         s.captureEngine?.stop()
                     }
+                } else if (start) {
+                    // Сервис был остановлен кнопкой «Стоп» — перезапускаем и привязываемся заново
+                    com.translator.offline.ui.AppLogger.log("Перезапуск сервиса после остановки…")
+                    startAndBindServiceSafely()
                 }
             }
 
@@ -126,6 +141,7 @@ class MainActivity : ComponentActivity() {
                         )
                     } else {
                         var isSetupDone by remember { mutableStateOf(setupManager.isAllModelsReady()) }
+                        var initFailed by remember { mutableStateOf(false) }
                         var isTabletopMode by remember { mutableStateOf(false) }
                         var showAudioSheet by remember { mutableStateOf(false) }
                         var showDebugSheet by remember { mutableStateOf(false) }
@@ -150,9 +166,18 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (!isSetupDone) {
-                            OnboardingSetupScreen(setupManager = setupManager) {
-                                viewModel.initEngines(setupManager.modelsDir) {
-                                    isSetupDone = true
+                            OnboardingSetupScreen(
+                                setupManager = setupManager,
+                                initFailed = initFailed,
+                                onRetryInit = {
+                                    initFailed = false
+                                    viewModel.initEngines(setupManager.modelsDir) { success ->
+                                        if (success) isSetupDone = true else initFailed = true
+                                    }
+                                }
+                            ) {
+                                viewModel.initEngines(setupManager.modelsDir) { success ->
+                                    if (success) isSetupDone = true else initFailed = true
                                 }
                             }
                         } else {
@@ -191,7 +216,13 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (showDebugSheet) {
-                        DebugConsoleSheet(onDismiss = { showDebugSheet = false })
+                        DebugConsoleSheet(
+                            onDismiss = { showDebugSheet = false },
+                            onStopService = {
+                                showDebugSheet = false
+                                service?.stop()
+                            }
+                        )
                     }
                     }
                 }
@@ -210,10 +241,13 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        // Сбрасываем колбэки до unbind, пока ссылка на сервис ещё жива
+        service?.onNewRecognition = null
+        service?.onNewTranslationToken = null
         if (isBound) {
             unbindService(connection)
             isBound = false
         }
+        super.onDestroy()
     }
 }

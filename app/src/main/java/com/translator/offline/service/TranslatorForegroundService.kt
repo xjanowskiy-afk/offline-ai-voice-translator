@@ -18,6 +18,9 @@ import com.translator.offline.audio.EarChannel
 import com.translator.offline.audio.StreamingVoicePipeline
 import com.translator.offline.ui.AppLogger
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
 
 class TranslatorForegroundService : Service() {
 
@@ -36,8 +39,13 @@ class TranslatorForegroundService : Service() {
     var routingManager: AudioRoutingManager? = null
         private set
 
-    var onNewRecognition: ((sourceText: String) -> Unit)? = null
-    var onNewTranslationToken: ((token: String, isFinished: Boolean) -> Unit)? = null
+    var onNewRecognition: ((sourceText: String, generationId: Long) -> Unit)? = null
+    var onNewTranslationToken: ((token: String, isFinished: Boolean, generationId: Long) -> Unit)? = null
+
+    // Сериализация переводов: пока идёт одна генерация, следующая ждёт.
+    // Убирает гонку общего буфера предложений и флага языка (аудит #4).
+    private val translationMutex = Mutex()
+    private val generationIdCounter = AtomicLong(0)
 
     inner class LocalBinder : Binder() {
         fun getService(): TranslatorForegroundService = this@TranslatorForegroundService
@@ -79,8 +87,16 @@ class TranslatorForegroundService : Service() {
                 if (routingManager?.currentMode?.value == AudioTranslationMode.TABLE_SPEAKER) {
                     captureEngine?.isHalfDuplexBlocked = speaking
                 }
+            },
+            preferredDeviceProvider = { mode ->
+                routingManager?.resolveOutputDevice(mode)
             }
         )
+        // Начальный режим вывода TTS + подписка на переключения из UI
+        voicePipeline?.setAudioMode(routingManager?.currentMode?.value ?: AudioTranslationMode.TABLE_SPEAKER)
+        routingManager?.onModeChanged = { mode ->
+            voicePipeline?.setAudioMode(mode)
+        }
 
         captureEngine = AudioCaptureEngine(
             onSpeechSegmentReady = {
@@ -90,6 +106,16 @@ class TranslatorForegroundService : Service() {
     }
 
     private fun processRecognizedSpeech() {
+        // Сериализуем весь цикл «сегмент -> перевод -> TTS»: новая генерация
+        // не может начаться, пока не завершилась предыдущая.
+        serviceScope.launch {
+            translationMutex.withLock {
+                runTranslationFlow()
+            }
+        }
+    }
+
+    private suspend fun runTranslationFlow() {
         if (!NativeBridge.isNativeReady()) {
             AppLogger.log("ASR: нативные движки ещё не загружены")
             return
@@ -103,18 +129,17 @@ class TranslatorForegroundService : Service() {
             return
         }
 
+        val generationId = generationIdCounter.incrementAndGet()
         AppLogger.log("ASR распознано: \"$recognizedText\"")
 
-        serviceScope.launch(Dispatchers.Main) {
-            onNewRecognition?.invoke(recognizedText)
+        withContext(Dispatchers.Main) {
+            onNewRecognition?.invoke(recognizedText, generationId)
         }
 
         val isRussian = detectIsRussian(recognizedText)
         val srcName = if (isRussian) "Russian" else "German"
         val dstName = if (isRussian) "German" else "Russian"
         val isTargetGerman = isRussian
-
-        voicePipeline?.isTargetGerman = isTargetGerman
 
         val targetChannel = when (routingManager?.currentMode?.value) {
             AudioTranslationMode.SPLIT_EARBUDS -> {
@@ -136,11 +161,13 @@ class TranslatorForegroundService : Service() {
 
         val startTime = System.currentTimeMillis()
 
-        serviceScope.launch(Dispatchers.Default) {
+        // Блокирующий JNI-вызов генерации — на IO-диспетчере,
+        // чтобы не голодал Default-пул во время 10–20 с генерации.
+        withContext(Dispatchers.IO) {
             NativeBridge.translateStreaming(prompt) { token, isEnd ->
-                voicePipeline?.onNewTranslatedToken(token, isEnd, targetChannel)
+                voicePipeline?.onNewTranslatedToken(token, isEnd, targetChannel, isTargetGerman, generationId)
                 serviceScope.launch(Dispatchers.Main) {
-                    onNewTranslationToken?.invoke(token, isEnd)
+                    onNewTranslationToken?.invoke(token, isEnd, generationId)
                     if (isEnd) {
                         val duration = System.currentTimeMillis() - startTime
                         AppLogger.log("Перевод сгенерирован за ${duration} мс ($srcName -> $dstName)")
@@ -211,14 +238,35 @@ class TranslatorForegroundService : Service() {
         }
     }
 
+    /**
+     * Публичная остановка сервиса из UI: гасит микрофон, снимает
+     * foreground-статус и останавливает сервис. Повторный запуск —
+     * кнопкой записи (сервис и движки инициализируются заново).
+     */
+    fun stop() {
+        try {
+            captureEngine?.stop()
+        } catch (_: Throwable) {
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         captureEngine?.stop()
         voicePipeline?.release()
         routingManager?.release()
-        if (NativeBridge.isNativeReady()) {
-            NativeBridge.releaseAll()
-        }
+        // releaseAll может ждать нативный мьютекс, пока идёт генерация, —
+        // выполняем в фоновом потоке, чтобы не получить ANR на главном (аудит #9).
+        Thread {
+            try {
+                if (NativeBridge.isNativeReady()) {
+                    NativeBridge.releaseAll()
+                }
+            } catch (_: Throwable) {
+            }
+        }.apply { isDaemon = true; start() }
         serviceScope.cancel()
     }
 }
