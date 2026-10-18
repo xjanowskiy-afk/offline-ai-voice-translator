@@ -75,7 +75,7 @@ Java_com_translator_offline_NativeBridge_initVad(
     std::memset(&config, 0, sizeof(config));
     config.silero_vad.model = path;
     config.silero_vad.threshold = 0.5f;
-    config.silero_vad.min_silence_duration = 0.5f;
+    config.silero_vad.min_silence_duration = 0.65f;
     config.silero_vad.min_speech_duration = 0.25f;
     config.silero_vad.window_size = 512;
     config.silero_vad.max_speech_duration = 30.0f;

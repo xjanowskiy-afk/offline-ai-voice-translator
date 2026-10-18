@@ -45,6 +45,11 @@ class AudioCaptureEngine(
     @Volatile
     var isHalfDuplexBlocked: Boolean = false
 
+    private var dynamicNoiseFloorRms = 0.005f
+    private var isCalibrated = false
+    private var calibrationFramesCount = 0
+    private var calibrationSumRms = 0.0
+
     @SuppressLint("MissingPermission")
     fun start() {
         if (isCapturing) return
@@ -98,9 +103,12 @@ class AudioCaptureEngine(
                 echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply {
                     enabled = true
                 }
+                com.translator.offline.ui.AppLogger.log("AcousticEchoCanceler успешно активирован (sessionId=$audioSessionId)")
             } catch (e: Exception) {
                 com.translator.offline.ui.AppLogger.log("AcousticEchoCanceler недоступен: ${e.message}")
             }
+        } else {
+            com.translator.offline.ui.AppLogger.log("AcousticEchoCanceler: аппаратный AEC не поддерживается на данном источнике")
         }
 
         if (NoiseSuppressor.isAvailable()) {
@@ -108,12 +116,19 @@ class AudioCaptureEngine(
                 noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply {
                     enabled = true
                 }
+                com.translator.offline.ui.AppLogger.log("NoiseSuppressor успешно активирован")
             } catch (e: Exception) {
                 com.translator.offline.ui.AppLogger.log("NoiseSuppressor недоступен: ${e.message}")
             }
         }
 
         audioRecord = record
+        // Сброс параметров динамической калибровки шума
+        isCalibrated = false
+        calibrationFramesCount = 0
+        calibrationSumRms = 0.0
+        dynamicNoiseFloorRms = 0.005f
+
         try {
             record.startRecording()
             isCapturing = true
@@ -133,8 +148,21 @@ class AudioCaptureEngine(
 
     private suspend fun runCaptureLoop() {
         var consecutiveSilenceFrames = 0
+        var speechDurationFrames = 0
+        var segmentTotalRms = 0.0
+        var segmentFramesCount = 0
         var hasActiveSpeech = false
         var loggedFirstSamples = false
+
+        // 1 фрейм = 480 сэмплов при 16000 Гц = 30 мс
+        // 1 секунда калибровки = 33 фрейма
+        val calibrationTargetFrames = 33
+        // Рекомендация Музы #3: silence gap 630 мс (21 фрейм) под немецкую речь
+        val silenceGapFrames = 21
+        // max фраза 4500 мс (150 фреймов) под длинные Nebensätze с глаголом в конце
+        val maxSpeechFrames = 150
+        // min фраза 1200 мс (40 фреймов) — отсекает щелчки и DTMF, пропуская короткие ответы
+        val minSpeechFrames = 40
 
         while (currentCoroutineContext().isActive && isCapturing) {
             val record = audioRecord ?: break
@@ -154,6 +182,10 @@ class AudioCaptureEngine(
 
             if (isHalfDuplexBlocked) {
                 consecutiveSilenceFrames = 0
+                speechDurationFrames = 0
+                hasActiveSpeech = false
+                segmentTotalRms = 0.0
+                segmentFramesCount = 0
                 if (NativeBridge.isNativeReady()) {
                     NativeBridge.resetVad()
                 }
@@ -172,36 +204,90 @@ class AudioCaptureEngine(
             val rms = Math.sqrt(sumSq / readSamples).toFloat()
             _audioAmplitude.value = (rms * 5.0f).coerceIn(0.0f, 1.0f)
 
-            val isSpeech = if (NativeBridge.isNativeReady()) {
+            // Рекомендация Музы #2: Динамическая калибровка шума за 1 секунду
+            if (!isCalibrated) {
+                calibrationSumRms += rms
+                calibrationFramesCount++
+                if (calibrationFramesCount >= calibrationTargetFrames) {
+                    val avgNoise = (calibrationSumRms / calibrationFramesCount).toFloat()
+                    dynamicNoiseFloorRms = avgNoise.coerceIn(0.002f, 0.04f)
+                    isCalibrated = true
+                    com.translator.offline.ui.AppLogger.log("VAD авто-калибровка завершена: базовый шум RMS = %.4f".format(dynamicNoiseFloorRms))
+                }
+            }
+
+            val isVadDetected = if (NativeBridge.isNativeReady()) {
                 NativeBridge.processVadChunk(directFloatBuffer, readSamples)
             } else {
                 false
             }
 
+            // Фильтрация шума: речь считается активной, если VAD сработал И амплитуда выше динамического шума
+            val speechThreshold = (dynamicNoiseFloorRms * 1.8f).coerceAtLeast(0.004f)
+            val isSpeech = isVadDetected && (rms >= speechThreshold)
+
             if (isSpeech) {
                 if (!hasActiveSpeech) {
                     com.translator.offline.ui.AppLogger.log("VAD: обнаружен человеческий голос (речь)!")
+                    hasActiveSpeech = true
+                    segmentTotalRms = 0.0
+                    segmentFramesCount = 0
+                    speechDurationFrames = 0
                 }
-                hasActiveSpeech = true
                 consecutiveSilenceFrames = 0
+                speechDurationFrames++
+                segmentTotalRms += rms
+                segmentFramesCount++
+
                 if (NativeBridge.isNativeReady()) {
                     NativeBridge.feedAudioToAsr(directFloatBuffer, readSamples)
+                }
+
+                // Предохранитель от бесконечной фразы (4500 мс)
+                if (speechDurationFrames >= maxSpeechFrames) {
+                    com.translator.offline.ui.AppLogger.log("VAD: достигнут предел фразы (4500 мс), сброс в ASR...")
+                    hasActiveSpeech = false
+                    consecutiveSilenceFrames = 0
+                    speechDurationFrames = 0
+                    onSpeechSegmentReady()
                 }
             } else {
                 if (hasActiveSpeech) {
                     consecutiveSilenceFrames++
-                    if (consecutiveSilenceFrames <= 5) {
+                    speechDurationFrames++
+                    segmentTotalRms += rms
+                    segmentFramesCount++
+
+                    // Захватываем легкий хвостик речи
+                    if (consecutiveSilenceFrames <= 6) {
                         if (NativeBridge.isNativeReady()) {
                             NativeBridge.feedAudioToAsr(directFloatBuffer, readSamples)
                         }
                     }
 
                     val isEndpoint = if (NativeBridge.isNativeReady()) NativeBridge.isAsrEndpoint() else false
-                    if (consecutiveSilenceFrames >= 18 || isEndpoint) {
-                        com.translator.offline.ui.AppLogger.log("VAD: завершение речевого сегмента, отправка в ASR...")
+                    
+                    // Рекомендация Музы #3: тишина 630 мс (21 фрейм) или ASR endpoint
+                    if (consecutiveSilenceFrames >= silenceGapFrames || isEndpoint) {
+                        val avgSegmentRms = if (segmentFramesCount > 0) (segmentTotalRms / segmentFramesCount).toFloat() else 0.0f
+                        val minValidThreshold = dynamicNoiseFloorRms * 1.3f
+
+                        // Рекомендация Музы #2: Отсев пустых ложных срабатываний
+                        if (speechDurationFrames >= minSpeechFrames && avgSegmentRms >= minValidThreshold) {
+                            com.translator.offline.ui.AppLogger.log("VAD: сегмент подтвержден (RMS=%.4f, frames=%d), отправка в ASR...".format(avgSegmentRms, speechDurationFrames))
+                            onSpeechSegmentReady()
+                        } else {
+                            com.translator.offline.ui.AppLogger.log("VAD: отсев шума/щелчка (длина %d фреймов, RMS=%.4f < %.4f)".format(speechDurationFrames, avgSegmentRms, minValidThreshold))
+                            if (NativeBridge.isNativeReady()) {
+                                NativeBridge.resetAsrStream()
+                            }
+                        }
+
                         hasActiveSpeech = false
                         consecutiveSilenceFrames = 0
-                        onSpeechSegmentReady()
+                        speechDurationFrames = 0
+                        segmentTotalRms = 0.0
+                        segmentFramesCount = 0
                     }
                 }
             }
