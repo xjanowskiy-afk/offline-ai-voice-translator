@@ -23,9 +23,9 @@
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:label="Offline Voice Translator"
+        android:label="@string/app_name"
         android:largeHeap="true"
-        android:extractNativeLibs="false"
+        android:extractNativeLibs="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.OfflineTranslator"
         tools:targetApi="34">

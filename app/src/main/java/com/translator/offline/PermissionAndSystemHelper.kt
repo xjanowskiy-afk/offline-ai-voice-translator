@@ -53,8 +53,12 @@ object PermissionAndSystemHelper {
     }
 
     fun isIgnoringBatteryOptimizations(context: Context): Boolean {
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+        return try {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: true
+        } catch (_: Throwable) {
+            true
+        }
     }
 
     @SuppressLint("BatteryLife")

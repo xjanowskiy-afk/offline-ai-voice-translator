@@ -59,8 +59,17 @@ class ModelSetupManager(private val context: Context) {
     private val _progressState = MutableStateFlow(SetupProgress())
     val progressState = _progressState.asStateFlow()
 
-    val modelsDir: File = File(context.getExternalFilesDir(null), "models").apply {
-        if (!exists()) mkdirs()
+    val modelsDir: File by lazy {
+        val baseDir = try {
+            context.getExternalFilesDir(null) ?: context.filesDir
+        } catch (_: Throwable) {
+            context.filesDir
+        }
+        File(baseDir, "models").apply {
+            if (!exists()) {
+                try { mkdirs() } catch (_: Throwable) {}
+            }
+        }
     }
 
     private val tasks = listOf(
@@ -209,15 +218,18 @@ class ModelSetupManager(private val context: Context) {
     }
 
     fun isAllModelsReady(): Boolean {
-        // Проверяем наличие всех критических файлов нейросетей
-        val criticalTasks = tasks.filter { !it.isArchive }
-        val allCriticalPresent = criticalTasks.all { task ->
-            val file = File(modelsDir, task.fileName)
-            file.exists() && file.length() >= (task.minExpectedBytes * 0.85).toLong()
+        return try {
+            val criticalTasks = tasks.filter { !it.isArchive }
+            val allCriticalPresent = criticalTasks.all { task ->
+                val file = File(modelsDir, task.fileName)
+                file.exists() && file.length() >= (task.minExpectedBytes * 0.85).toLong()
+            }
+            val espeakDir = File(modelsDir, "espeak-ng-data")
+            val espeakReady = espeakDir.exists() && espeakDir.isDirectory && (espeakDir.list()?.isNotEmpty() == true)
+            allCriticalPresent && espeakReady
+        } catch (_: Throwable) {
+            false
         }
-        val espeakDir = File(modelsDir, "espeak-ng-data")
-        val espeakReady = espeakDir.exists() && espeakDir.isDirectory && (espeakDir.list()?.isNotEmpty() == true)
-        return allCriticalPresent && espeakReady
     }
 
     suspend fun startDownloadPipeline(onComplete: () -> Unit) = withContext(Dispatchers.IO) {
